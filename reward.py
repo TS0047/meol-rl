@@ -24,7 +24,9 @@ class Constants:
     c_VIAS: float = 30.0           # m/s, penalty scale -- assumed
     alpha_stall: float = 25.0      # deg, mid of Shaw's 20-30deg usable AoA -- assumed
     beta_max: float = 20.0         # deg, sideslip limit -- assumed
-    c_beta: float = 10.0            # deg, sideslip penalty scale -- assumed
+    c_beta: float = 20.0       # deg, sideslip penalty scale -- assumed. Keep c_beta == beta_max:
+                               # Eq.(36) is -(beta/c_beta)^2 inside the limit and -1 outside it, so
+                               # any c_beta < beta_max makes the penalty jump UP (less negative) at the limit.
 
 
 C = Constants()

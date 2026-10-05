@@ -12,7 +12,6 @@ from gymnasium import spaces
 
 from geometry import body_x_enu, combat_geometry, proximity, reset_geometry
 
-from lag_adversary import LAGBaselineAdversary
 from adversary import BFMAdversary
 from reward import R_angle
 
@@ -38,9 +37,12 @@ M2FT = 1.0 / 0.3048
 
 DT = 1.0 / 50.0                 # sim step, 50 Hz (Sec 5.1)
 INIT_THROTTLE = 0.7             # initial throttle command, both aircraft
-CRASH_PENALTY_PER_STEP = 10.0    # crash reward = -CRASH_PENALTY_PER_STEP * remaining episode STEPS.
-                                # Per step, not per second: staying alive costs ~-0.35/step (-17/s) with the
-                                # current regularisation, so a per-second penalty made crashing the optimum.
+CRASH_PENALTY = 600.0           # flat terminal reward on self crash = -CRASH_PENALTY.
+                                # Must exceed the discounted cost of surviving, worst_step_loss / (1 - gamma):
+                                # a bad-but-flyable step (deck, slow, high AoA, sideslip, bandit on our tail)
+                                # scores ~-5.5, and gamma = 0.99 (Table 2) gives ~550, so crashing never pays.
+                                # Not scaled by remaining steps: discounting caps the value of the future at
+                                # ~100 steps, and -10 * remaining (up to -60000) would swamp the Q-targets.
 
 # Small sparse bonus added to R_goal on every step in which self satisfies the
 # shoot condition (r < SHOOT_RANGE_FT and ATA <= SHOOT_ATA_DEG). Deliberately minor
@@ -165,7 +167,12 @@ class AngleTacticEnv(gym.Env):
         if adversary_type == "bfm":
             self.adversary = BFMAdversary()
         elif adversary_type == "lag_baseline":
+            # lag_adversary.py (LAG pretrained net) is no longer in the repo -- BFMAdversary
+            # superseded it. Imported here so the default path does not depend on it.
+            from lag_adversary import LAGBaselineAdversary
             self.adversary = LAGBaselineAdversary()
+        else:
+            raise ValueError(f"unknown adversary_type {adversary_type!r}")
         self.step_count = 0
         self.trajectory = []
         self.first_goal = None
@@ -269,8 +276,7 @@ class AngleTacticEnv(gym.Env):
         else:
             bonus = 0.0
         if s_self["alt_m"] <= 200.0:
-            remaining_steps = max(self.max_steps - self.step_count, 0)
-            return -10, True, "crash"
+            return -CRASH_PENALTY, True, "crash"
         if s_adv["alt_m"] <= 200.0:
             # Neither this nor the base paper (Sec 2.4) scores "opponent
             # crashed" as a win -- terminate (avoids the Phi_energy
