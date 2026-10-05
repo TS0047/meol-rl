@@ -9,3 +9,6 @@ checkpoints/
 plots/
 *.pt
 *.acmi
+
+# trained models deliberately kept in the repo (small: ~0.7 MB per run)
+!models/**/*.pt

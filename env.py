@@ -10,9 +10,8 @@ import numpy as np
 import gymnasium as gym
 from gymnasium import spaces
 
-from geometry import body_x_enu, combat_geometry, proximity, reset_geometry
+from geometry import body_axes_enu, body_x_enu, combat_geometry, proximity, reset_geometry
 
-from lag_adversary import LAGBaselineAdversary
 from adversary import BFMAdversary
 from reward import R_angle
 
@@ -38,9 +37,27 @@ M2FT = 1.0 / 0.3048
 
 DT = 1.0 / 50.0                 # sim step, 50 Hz (Sec 5.1)
 INIT_THROTTLE = 0.7             # initial throttle command, both aircraft
-CRASH_PENALTY_PER_STEP = 10.0    # crash reward = -CRASH_PENALTY_PER_STEP * remaining episode STEPS.
-                                # Per step, not per second: staying alive costs ~-0.35/step (-17/s) with the
-                                # current regularisation, so a per-second penalty made crashing the optimum.
+CRASH_PENALTY = 1000.0          # flat terminal reward on self crash = -CRASH_PENALTY.
+                                # Must exceed the discounted cost of surviving, worst_step_loss / (1 - gamma):
+                                # a bad-but-flyable step (deck, slow, high AoA, sideslip, bandit on our tail,
+                                # diving at the deck so P_ground is maxed) scores ~-7.5, and gamma = 0.99
+                                # (Table 2) gives ~750, so crashing never pays. Not scaled by remaining steps:
+                                # discounting caps the value of the future at ~100 agent decisions, and
+                                # -10 * remaining (up to -60000) would swamp the Q-targets.
+
+# Agent decision rate. The sim (and the adversary) run at 50 Hz; the agent picks an
+# action every ACTION_REPEAT sim steps and holds it. At 50 Hz, gamma = 0.99 sees only
+# ~2 s ahead (0.99^1000 ~ 4e-5 for an event 20 s out), so a dive that ends in a crash
+# 10 s later is invisible when it starts. At 10 Hz the same gamma sees ~10 s ahead.
+# The per-decision reward is the MEAN of the per-sim-step rewards, so every reward
+# constant keeps its per-step meaning; the crash penalty is added once, unaveraged.
+ACTION_REPEAT = 5
+
+# Observation layout. "paper" = Eq.(43) only. "extended" appends what the policy needs
+# to fly raw control surfaces: its own attitude, body rates, vertical speed, and the
+# bandit's direction/heading in body axes (Eq.43's AA/ATA are unsigned, so they cannot
+# say whether the bandit is left or right, above or below).
+OBS_DIMS = {"paper": 8, "extended": 21}
 
 # Small sparse bonus added to R_goal on every step in which self satisfies the
 # shoot condition (r < SHOOT_RANGE_FT and ATA <= SHOOT_ATA_DEG). Deliberately minor
@@ -133,6 +150,9 @@ def _read_state(fdm, origin_ll=(0.0, 0.0)):
         "phi_rad": fdm["attitude/phi-rad"],
         "theta_rad": fdm["attitude/theta-rad"],
         "psi_rad": fdm["attitude/psi-rad"],
+        "pqr_rad_s": np.array([
+            fdm["velocities/p-rad_sec"], fdm["velocities/q-rad_sec"], fdm["velocities/r-rad_sec"],
+        ]),
         "alpha_rad": fdm["aero/alpha-rad"],
         "nz": fdm["accelerations/Nz"],
         "kcas": fdm["velocities/vc-kts"],
@@ -153,11 +173,19 @@ def _energy(state):
 class AngleTacticEnv(gym.Env):
     metadata = {"render_modes": []}
 
-    def __init__(self, max_steps=6000, log_trajectory=False, adversary_type="bfm"):
+    def __init__(self, max_steps=6000, log_trajectory=False, adversary_type="bfm",
+                 obs_mode="extended", action_repeat=ACTION_REPEAT):
+        """max_steps counts 50 Hz sim steps (6000 = 120 s), whatever action_repeat is.
+        obs_mode="paper", action_repeat=1 reproduces the paper's interface exactly."""
         super().__init__()
+        if obs_mode not in OBS_DIMS:
+            raise ValueError(f"unknown obs_mode {obs_mode!r}, expected one of {list(OBS_DIMS)}")
         self.max_steps = max_steps
         self.log_trajectory = log_trajectory
-        self.observation_space = spaces.Box(low=-1e4, high=1e4, shape=(8,), dtype=np.float32)
+        self.obs_mode = obs_mode
+        self.action_repeat = int(action_repeat)
+        self.observation_space = spaces.Box(low=-1e4, high=1e4, shape=(OBS_DIMS[obs_mode],),
+                                            dtype=np.float32)
         self.action_space = spaces.Box(low=-1.0, high=1.0, shape=(4,), dtype=np.float32)
         self.fdm_self = _make_fdm()
         self.fdm_adv = _make_fdm()
@@ -165,13 +193,18 @@ class AngleTacticEnv(gym.Env):
         if adversary_type == "bfm":
             self.adversary = BFMAdversary()
         elif adversary_type == "lag_baseline":
+            # lag_adversary.py (LAG pretrained net) is no longer in the repo -- BFMAdversary
+            # superseded it. Imported here so the default path does not depend on it.
+            from lag_adversary import LAGBaselineAdversary
             self.adversary = LAGBaselineAdversary()
+        else:
+            raise ValueError(f"unknown adversary_type {adversary_type!r}")
         self.step_count = 0
         self.trajectory = []
         self.first_goal = None
 
-    def _obs(self, geom, prox, s_self):
-        return np.array([
+    def _obs(self, geom, prox, s_self, s_adv):
+        paper = [                                   # Eq.(43)
             geom["Range"] / 5000.0,
             prox / 300.0,
             geom["AA"] / 180.0,
@@ -180,7 +213,20 @@ class AngleTacticEnv(gym.Env):
             s_self["alt_m"] / 6000.0,
             s_self["alpha_deg"] / 30.0,
             s_self["beta_deg"] / 30.0,
-        ], dtype=np.float32)
+        ]
+        if self.obs_mode == "paper":
+            return np.array(paper, dtype=np.float32)
+        xb, yb, zb = body_axes_enu(s_self["phi_rad"], s_self["theta_rad"], s_self["psi_rad"])
+        los, e_adv = geom["los_hat"], s_adv["e_hat"]
+        extended = [
+            np.sin(s_self["phi_rad"]), np.cos(s_self["phi_rad"]),   # roll: which way is up
+            np.sin(s_self["theta_rad"]),                             # pitch
+            *(s_self["pqr_rad_s"] / 3.0),                            # body rates p, q, r
+            los @ xb, los @ yb, los @ zb,       # bandit direction: ahead / right wing / below floor
+            e_adv @ xb, e_adv @ yb, e_adv @ zb,  # bandit's nose direction in our body axes
+            s_self["v"][2] / 100.0,             # vertical speed, + = climbing
+        ]
+        return np.array(paper + extended, dtype=np.float32)
 
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
@@ -208,50 +254,61 @@ class AngleTacticEnv(gym.Env):
         self.first_goal = None
         self.adversary.reset()
         self._log_step(s_self, s_adv, geom, prox)
-        return self._obs(geom, prox, s_self), {}
+        return self._obs(geom, prox, s_self, s_adv), {}
 
     def step(self, action):
+        """One agent decision: hold `action` for action_repeat 50 Hz sim steps (fewer if
+        the episode ends). The adversary still acts every sim step."""
         action = np.clip(action, -1.0, 1.0)
         self.fdm_self["fcs/aileron-cmd-norm"] = float(action[0])
         self.fdm_self["fcs/rudder-cmd-norm"] = float(action[1])
         self.fdm_self["fcs/elevator-cmd-norm"] = float(action[2])
         self.fdm_self["fcs/throttle-cmd-norm[0]"] = float(np.clip((action[3] + 1) / 2, 0.0, 1.0))
 
-        s_self_prev = _read_state(self.fdm_self)
-        s_adv_prev = _read_state(self.fdm_adv)
-        adv_action = self.adversary.act(s_adv_prev, s_self_prev)
-        self.fdm_adv["fcs/aileron-cmd-norm"] = float(adv_action[0])
-        self.fdm_adv["fcs/rudder-cmd-norm"] = float(adv_action[1])
-        self.fdm_adv["fcs/elevator-cmd-norm"] = float(adv_action[2])
-        self.fdm_adv["fcs/throttle-cmd-norm[0]"] = float(adv_action[3])
+        rewards, crash_penalty = [], 0.0
+        for _ in range(self.action_repeat):
+            s_self_prev = _read_state(self.fdm_self)
+            s_adv_prev = _read_state(self.fdm_adv)
+            adv_action = self.adversary.act(s_adv_prev, s_self_prev)
+            self.fdm_adv["fcs/aileron-cmd-norm"] = float(adv_action[0])
+            self.fdm_adv["fcs/rudder-cmd-norm"] = float(adv_action[1])
+            self.fdm_adv["fcs/elevator-cmd-norm"] = float(adv_action[2])
+            self.fdm_adv["fcs/throttle-cmd-norm[0]"] = float(adv_action[3])
 
-        self.fdm_self.run()
-        self.fdm_adv.run()
-        self.step_count += 1
+            self.fdm_self.run()
+            self.fdm_adv.run()
+            self.step_count += 1
 
-        s_self = _read_state(self.fdm_self)
-        s_adv = _read_state(self.fdm_adv)
-        geom = combat_geometry(s_self["pos"], s_self["e_hat"], s_adv["pos"], s_adv["e_hat"])
-        prox = proximity(s_self["pos"], s_self["v"], s_adv["pos"], s_adv["v"])
+            s_self = _read_state(self.fdm_self)
+            s_adv = _read_state(self.fdm_adv)
+            geom = combat_geometry(s_self["pos"], s_self["e_hat"], s_adv["pos"], s_adv["e_hat"])
+            prox = proximity(s_self["pos"], s_self["v"], s_adv["pos"], s_adv["v"])
 
-        R_goal, terminated, outcome = self._check_outcome(geom, s_self, s_adv)
-        truncated = self.step_count >= self.max_steps
+            R_goal, terminated, outcome = self._check_outcome(geom, s_self, s_adv)
+            if outcome == "crash":
+                crash_penalty, R_goal = R_goal, 0.0   # paid once below, not averaged away
+            truncated = self.step_count >= self.max_steps
 
-        state_dict = {
-            "Range": geom["Range"], "Proximity": prox, "AA": geom["AA"], "ATA": geom["ATA"],
-            "E_self": _energy(s_self), "E_adv": _energy(s_adv),
-            "altitude": s_self["alt_m"], "VIAS": s_self["vias_mps"],
-            "alpha_AoA": s_self["alpha_deg"], "beta": s_self["beta_deg"],
-        }
-        reward = R_angle(state_dict, list(action), R_goal)
+            state_dict = {
+                "Range": geom["Range"], "Proximity": prox, "AA": geom["AA"], "ATA": geom["ATA"],
+                "E_self": _energy(s_self), "E_adv": _energy(s_adv),
+                "altitude": s_self["alt_m"], "VIAS": s_self["vias_mps"],
+                "alpha_AoA": s_self["alpha_deg"], "beta": s_self["beta_deg"],
+                "v_up": s_self["v"][2],
+            }
+            rewards.append(R_angle(state_dict, list(action), R_goal))
+            self._log_step(s_self, s_adv, geom, prox)
+            if terminated or truncated:
+                break
+        reward = float(np.mean(rewards)) + crash_penalty
 
-        self._log_step(s_self, s_adv, geom, prox)
         if truncated and not terminated:
             outcome = "timeout"
         if terminated or truncated:
             outcome = self._label_outcome(outcome)
-        info = {"outcome": outcome, "goal": self.first_goal, "HCA": geom["HCA"]}
-        return self._obs(geom, prox, s_self), reward, terminated, truncated, info
+        info = {"outcome": outcome, "goal": self.first_goal, "HCA": geom["HCA"],
+                "sim_steps": len(rewards)}
+        return self._obs(geom, prox, s_self, s_adv), reward, terminated, truncated, info
 
     def _check_outcome(self, geom, s_self, s_adv):
         in_band = SHOOT_MIN_RANGE_M <= geom["Range"] <= SHOOT_RANGE_M
@@ -269,8 +326,7 @@ class AngleTacticEnv(gym.Env):
         else:
             bonus = 0.0
         if s_self["alt_m"] <= 200.0:
-            remaining_steps = max(self.max_steps - self.step_count, 0)
-            return -10, True, "crash"
+            return -CRASH_PENALTY, True, "crash"
         if s_adv["alt_m"] <= 200.0:
             # Neither this nor the base paper (Sec 2.4) scores "opponent
             # crashed" as a win -- terminate (avoids the Phi_energy
