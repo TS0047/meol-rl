@@ -48,7 +48,8 @@ for d in (LOG_DIR, CKPT_DIR, PLOT_DIR):
 
 def train(total_env_steps=int(1.5e7), n_generator_samples=10, episodes_per_point=2,
           mini_batch=256, max_ep_steps=6000, seed=0, wgan_critic_batch=64,
-          plot_every_n_episodes=50, ckpt_every_n_epochs=5, obs_mode="extended", action_repeat=5):
+          plot_every_n_episodes=50, ckpt_every_n_epochs=5, obs_mode="extended", action_repeat=5,
+          device="cpu"):
     """n_generator_samples (Algorithm 2's n), episodes_per_point and
     wgan_critic_batch are NOT given in the paper -- flagged assumptions.
     mini_batch=256 is Table 2 exact. One epoch costs roughly
@@ -61,7 +62,7 @@ def train(total_env_steps=int(1.5e7), n_generator_samples=10, episodes_per_point
     obs_dim = env.observation_space.shape[0]
     act_dim = env.action_space.shape[0]
 
-    agent = SACAgent(obs_dim, act_dim)
+    agent = SACAgent(obs_dim, act_dim, device=device)
     buffer = ReplayBuffer(obs_dim, act_dim, size=200000)
     curriculum = WGANCurriculum()
 
@@ -196,9 +197,12 @@ if __name__ == "__main__":
                    help="'paper' = Eq.(43) only; 'extended' adds attitude, rates and body-frame bandit direction")
     p.add_argument("--action-repeat", type=int, default=5,
                    help="sim steps (50 Hz) per agent decision; 1 = paper's literal 50 Hz decisions")
+    p.add_argument("--device", default="cpu",
+                   help="cpu | cuda | auto. The 2x256 nets at batch 256 are launch-overhead bound: "
+                        "measured ~equal speed on CPU and an RTX 5060, so CPU is the default")
     args = p.parse_args()
     train(total_env_steps=args.total_env_steps, n_generator_samples=args.n_generator_samples,
           episodes_per_point=args.episodes_per_point, mini_batch=args.mini_batch,
           max_ep_steps=args.max_ep_steps, seed=args.seed, wgan_critic_batch=args.wgan_critic_batch,
           plot_every_n_episodes=args.plot_every_n_episodes, ckpt_every_n_epochs=args.ckpt_every_n_epochs,
-          obs_mode=args.obs_mode, action_repeat=args.action_repeat)
+          obs_mode=args.obs_mode, action_repeat=args.action_repeat, device=args.device)

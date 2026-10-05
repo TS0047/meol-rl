@@ -10,8 +10,14 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.distributions import Normal
 
-DEVICE = torch.device("cpu")
 LOG_STD_MIN, LOG_STD_MAX = -20.0, 2.0
+
+
+def resolve_device(device="auto"):
+    """'auto' -> CUDA when available, else CPU. Anything else is passed to torch.device."""
+    if device == "auto":
+        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    return torch.device(device)
 
 
 def mlp(sizes, act=nn.ReLU, out_act=nn.Identity):
@@ -98,21 +104,24 @@ class SACAgent:
 
     def __init__(self, obs_dim, act_dim, hidden=256, gamma=0.99, tau=5e-3,
                  lr_q=3e-4, lr_pi=3e-4, lr_alpha=3e-4, target_entropy=-4.0,
-                 init_alpha=0.1):
+                 init_alpha=0.1, device="cpu"):
         self.gamma, self.tau = gamma, tau
-        self.q1, self.q2 = QNet(obs_dim, act_dim, hidden), QNet(obs_dim, act_dim, hidden)
-        self.q1_targ, self.q2_targ = QNet(obs_dim, act_dim, hidden), QNet(obs_dim, act_dim, hidden)
+        self.device = resolve_device(device)
+        dev = self.device
+        self.q1, self.q2 = QNet(obs_dim, act_dim, hidden).to(dev), QNet(obs_dim, act_dim, hidden).to(dev)
+        self.q1_targ = QNet(obs_dim, act_dim, hidden).to(dev)
+        self.q2_targ = QNet(obs_dim, act_dim, hidden).to(dev)
         for q, q_targ in ((self.q1, self.q1_targ), (self.q2, self.q2_targ)):
             q_targ.load_state_dict(q.state_dict())
             for p in q_targ.parameters():
                 p.requires_grad = False
-        self.pi = GaussianPolicy(obs_dim, act_dim, hidden)
+        self.pi = GaussianPolicy(obs_dim, act_dim, hidden).to(dev)
 
         self.q_opt = torch.optim.Adam(list(self.q1.parameters()) + list(self.q2.parameters()), lr=lr_q)
         self.pi_opt = torch.optim.Adam(self.pi.parameters(), lr=lr_pi)
 
         self.target_entropy = target_entropy
-        self.log_alpha = torch.tensor(np.log(init_alpha), requires_grad=True)
+        self.log_alpha = torch.tensor(np.log(init_alpha), dtype=torch.float32, device=dev, requires_grad=True)
         self.alpha_opt = torch.optim.Adam([self.log_alpha], lr=lr_alpha)
 
     @property
@@ -120,10 +129,10 @@ class SACAgent:
         return self.log_alpha.exp()
 
     def act(self, obs, deterministic=False):
-        obs_t = torch.as_tensor(obs, dtype=torch.float32).unsqueeze(0)
+        obs_t = torch.as_tensor(obs, dtype=torch.float32, device=self.device).unsqueeze(0)
         with torch.no_grad():
             a, _, a_det = self.pi.sample(obs_t)
-        return (a_det if deterministic else a).squeeze(0).numpy()
+        return (a_det if deterministic else a).squeeze(0).cpu().numpy()
 
     def _soft_update(self):
         # Algorithm 1, line 12: phi_bar <- sigma*phi + (1-sigma)*phi_bar, sigma=tau (Table 2)
@@ -133,7 +142,7 @@ class SACAgent:
                     pt.data.mul_(1 - self.tau).add_(self.tau * p.data)
 
     def update(self, batch):
-        obs, act, rew, next_obs, done = batch
+        obs, act, rew, next_obs, done = (t.to(self.device, non_blocking=True) for t in batch)
 
         # ---- Eq.(15)-(16): bootstrapped target from the smaller of the two target Qs ----
         with torch.no_grad():
