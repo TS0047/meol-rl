@@ -12,7 +12,6 @@ from gymnasium import spaces
 
 from geometry import body_x_enu, combat_geometry, proximity, reset_geometry
 
-from lag_adversary import LAGBaselineAdversary
 from adversary import BFMAdversary
 from reward import R_angle
 
@@ -165,7 +164,12 @@ class AngleTacticEnv(gym.Env):
         if adversary_type == "bfm":
             self.adversary = BFMAdversary()
         elif adversary_type == "lag_baseline":
+            # lag_adversary.py (LAG pretrained net) is no longer in the repo -- BFMAdversary
+            # superseded it. Imported here so the default path does not depend on it.
+            from lag_adversary import LAGBaselineAdversary
             self.adversary = LAGBaselineAdversary()
+        else:
+            raise ValueError(f"unknown adversary_type {adversary_type!r}")
         self.step_count = 0
         self.trajectory = []
         self.first_goal = None
