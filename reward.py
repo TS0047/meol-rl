@@ -27,6 +27,8 @@ class Constants:
     c_beta: float = 20.0       # deg, sideslip penalty scale -- assumed. Keep c_beta == beta_max:
                                # Eq.(36) is -(beta/c_beta)^2 inside the limit and -1 outside it, so
                                # any c_beta < beta_max makes the penalty jump UP (less negative) at the limit.
+    T_ground: float = 10.0     # s, time-to-deck look-ahead of P_ground -- NOT in paper (our addition)
+    k_ground: float = 2.0      # P_ground weight; 0.0 disables it (paper-faithful) -- NOT in paper
 
 
 C = Constants()
@@ -80,6 +82,22 @@ def C_action(action: list[float]) -> float:
     return -0.1 * sum(a ** 2 for a in action)
 
 
+def P_ground(altitude: float, v_up: float, c: Constants = C) -> float:
+    """Anticipatory ground avoidance -- our addition, not in the paper.
+    P_deck only fires once the aircraft is already below the deck; in a 300 m/s dive
+    that is about one second before impact, too late to pull out and too late for
+    gamma=0.99 to credit the manoeuvre that started the dive. This penalises the
+    predicted time to reach the deck instead, ramping linearly from 0 at T_ground
+    seconds out to -k_ground at the deck, so a dive costs reward while there is
+    still height to recover."""
+    if v_up >= 0.0 or c.k_ground == 0.0:
+        return 0.0
+    time_to_deck = max(altitude - c.altitude_deck, 0.0) / -v_up
+    if time_to_deck >= c.T_ground:
+        return 0.0
+    return -c.k_ground * (1.0 - time_to_deck / c.T_ground)
+
+
 def regularization(state: dict, action: list[float], c: Constants = C) -> float:
     return (
         P_deck(state["altitude"], c)
@@ -87,6 +105,7 @@ def regularization(state: dict, action: list[float], c: Constants = C) -> float:
         + P_alpha_AoA(state["alpha_AoA"], c)
         + P_beta(state["beta"], c)
         + C_action(action)
+        + P_ground(state["altitude"], state.get("v_up", 0.0), c)
     )
 
 
