@@ -57,7 +57,7 @@ CKPT_FORMAT = "meol-rl-full-v1"
 EP_HEADER = ["episode", "epoch", "env_steps", "return", "outcome", "win_rate_100", "x0_range", "x0_aa", "x0_ata"]
 EPOCH_HEADER = ["epoch", "episode", "env_steps", "d_loss", "wasserstein_est", "g_loss", "predictor_loss",
                 "n_valid_points", "epoch_win_rate", "epoch_completions", "feasible_buffer_size"]
-SAC_HEADER = ["epoch", "env_steps", "updates", "actor_frozen_updates", "q_loss", "pi_loss", "alpha",
+SAC_HEADER = ["epoch", "env_steps", "updates", "actor_frozen_updates", "q_loss", "pi_loss", "alpha", "entropy",
               "sim_steps_per_s", "win", "loss", "timeout", "crash", "other"]
 
 
@@ -124,13 +124,18 @@ def train(total_env_steps=int(1.5e7), n_generator_samples=10, episodes_per_point
           mini_batch=256, max_ep_steps=6000, seed=0, wgan_critic_batch=64,
           plot_every_n_episodes=50, ckpt_every_n_epochs=5, obs_mode="extended", action_repeat=5,
           device="cpu", buffer_size=int(1e6), uniform_frac=0.3, terminate_on_kill=True,
-          resume=None, actor_warmup_updates=None):
+          resume=None, actor_warmup_updates=None, reward_scale=0.1):
     """n_generator_samples (Algorithm 2's n), episodes_per_point and
     wgan_critic_batch are NOT given in the paper -- flagged assumptions.
     mini_batch=256 is Table 2 exact. One epoch costs at most
     n_generator_samples * episodes_per_point * max_ep_steps sim steps.
     buffer_size 1e6 (Garage's default): run A's 2e5 flushed its rare crash and
-    loss transitions within ~10 epochs, and crashes and losses came back."""
+    loss transitions within ~10 epochs, and crashes and losses came back.
+    reward_scale 0.1: with +1500 / -1000 terminal outcomes at scale 1, run C's
+    Q-loss rose 15-40x over run A's and alpha climbed 31x in three epochs at the
+    maximum rate (policy entropy pinned below target, actions saturating) while
+    crashes went 1 -> 9 -> 7. Scaling leaves the optimal policy unchanged and puts
+    the balancing alpha back near run A's ~0.02."""
     config = {k: v for k, v in locals().items() if k != "resume"}
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -140,7 +145,7 @@ def train(total_env_steps=int(1.5e7), n_generator_samples=10, episodes_per_point
     obs_dim = env.observation_space.shape[0]
     act_dim = env.action_space.shape[0]
 
-    agent = SACAgent(obs_dim, act_dim, device=device)
+    agent = SACAgent(obs_dim, act_dim, device=device, reward_scale=reward_scale)
     buffer = ReplayBuffer(obs_dim, act_dim, size=buffer_size)
     curriculum = WGANCurriculum(uniform_frac=uniform_frac)
 
@@ -177,7 +182,7 @@ def train(total_env_steps=int(1.5e7), n_generator_samples=10, episodes_per_point
 
     while env_steps < total_env_steps:
         t_epoch, steps_epoch0 = time.time(), env_steps
-        outcomes, q_losses, pi_losses, n_updates, n_frozen = Counter(), [], [], 0, 0
+        outcomes, q_losses, pi_losses, entropies, n_updates, n_frozen = Counter(), [], [], [], 0, 0
 
         # ---- Algorithm 2, lines 5-11: k critic steps ----
         d_stats = curriculum.run_critic_steps(batch_size=wgan_critic_batch)
@@ -217,6 +222,7 @@ def train(total_env_steps=int(1.5e7), n_generator_samples=10, episodes_per_point
                             n_frozen += 1
                         else:
                             pi_losses.append(stats["pi_loss"])
+                            entropies.append(stats["entropy"])
 
                 if not done:
                     break  # step budget ran out mid-episode: discard, do not count
@@ -271,13 +277,14 @@ def train(total_env_steps=int(1.5e7), n_generator_samples=10, episodes_per_point
                 epoch, env_steps, n_updates, n_frozen,
                 float(np.mean(q_losses)) if q_losses else None,
                 float(np.mean(pi_losses)) if pi_losses else None,
-                agent.alpha.item(), round(rate, 1),
+                agent.alpha.item(), float(np.mean(entropies)) if entropies else None, round(rate, 1),
                 outcomes["win"], outcomes["loss"], outcomes["timeout"], outcomes["crash"], other,
             ])
         print(f"[epoch {epoch:4d}] env_steps {env_steps:8d} | win {outcomes['win']} loss {outcomes['loss']} "
               f"timeout {outcomes['timeout']} crash {outcomes['crash']} other {other} | win_rate(100) "
               f"{float(np.mean(win_hist)) if win_hist else float('nan'):.3f} | feasible {len(curriculum.feasible)} "
-              f"| alpha {agent.alpha.item():.4f}{' (actor frozen)' if frozen_left > 0 else ''} "
+              f"| alpha {agent.alpha.item():.4f} entropy {np.mean(entropies) if entropies else float('nan'):.2f}"
+              f"{' (actor frozen)' if frozen_left > 0 else ''} "
               f"| {rate:.0f} sim steps/s", flush=True)
 
         epoch += 1
@@ -326,6 +333,8 @@ if __name__ == "__main__":
                    help="share of curriculum points drawn uniformly from Table 1 (1.0 = no-curriculum ablation)")
     p.add_argument("--no-terminate-on-kill", dest="terminate_on_kill", action="store_false",
                    help="run A's rule: kills only label the episode, never end it, no terminal reward")
+    p.add_argument("--reward-scale", type=float, default=0.1,
+                   help="multiplier on rewards inside the SAC backup (Table 2 'reward scale'); see train()")
     p.add_argument("--resume", default=None,
                    help="checkpoint file (exact resume) or model folder such as models/angle_tactic_A (actor warm start)")
     p.add_argument("--actor-warmup-updates", type=int, default=None,
@@ -338,4 +347,4 @@ if __name__ == "__main__":
           obs_mode=args.obs_mode, action_repeat=args.action_repeat, device=args.device,
           buffer_size=args.buffer_size, uniform_frac=args.uniform_frac,
           terminate_on_kill=args.terminate_on_kill, resume=args.resume,
-          actor_warmup_updates=args.actor_warmup_updates)
+          actor_warmup_updates=args.actor_warmup_updates, reward_scale=args.reward_scale)

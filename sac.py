@@ -117,8 +117,12 @@ class SACAgent:
 
     def __init__(self, obs_dim, act_dim, hidden=256, gamma=0.99, tau=5e-3,
                  lr_q=3e-4, lr_pi=3e-4, lr_alpha=3e-4, target_entropy=-4.0,
-                 init_alpha=0.1, device="cpu"):
+                 init_alpha=0.1, device="cpu", reward_scale=1.0):
+        """reward_scale multiplies every reward in the Bellman backup (Table 2 lists
+        "Reward scale"). It leaves the optimal policy unchanged but sets the scale of
+        Q, and so the alpha that balances entropy against it."""
         self.gamma, self.tau = gamma, tau
+        self.reward_scale = reward_scale
         self.device = resolve_device(device)
         dev = self.device
         self.q1, self.q2 = QNet(obs_dim, act_dim, hidden).to(dev), QNet(obs_dim, act_dim, hidden).to(dev)
@@ -164,7 +168,7 @@ class SACAgent:
             next_a, next_logp, _ = self.pi.sample(next_obs)
             q_next = torch.min(self.q1_targ(next_obs, next_a), self.q2_targ(next_obs, next_a))
             u_targ = q_next - self.alpha * next_logp                        # Eq.(16)
-            backup = rew + self.gamma * (1 - done) * u_targ                  # Eq.(15)
+            backup = self.reward_scale * rew + self.gamma * (1 - done) * u_targ   # Eq.(15)
 
         # ---- Eq.(14): minimize squared residual (correct-sign gradient descent) ----
         q_loss = F.mse_loss(self.q1(obs, act), backup) + F.mse_loss(self.q2(obs, act), backup)
@@ -175,7 +179,7 @@ class SACAgent:
         if not update_actor:
             self._soft_update()
             return {"q_loss": q_loss.item(), "pi_loss": float("nan"),
-                    "alpha": self.alpha.item(), "alpha_loss": float("nan")}
+                    "alpha": self.alpha.item(), "alpha_loss": float("nan"), "entropy": float("nan")}
 
         # ---- Eq.(17)-(18): reparameterized policy gradient (autograd = chain rule) ----
         a, logp, _ = self.pi.sample(obs)
@@ -194,7 +198,8 @@ class SACAgent:
         self._soft_update()
 
         return {"q_loss": q_loss.item(), "pi_loss": pi_loss.item(),
-                "alpha": self.alpha.item(), "alpha_loss": alpha_loss.item()}
+                "alpha": self.alpha.item(), "alpha_loss": alpha_loss.item(),
+                "entropy": -logp.mean().item()}
 
     def save(self, path):
         torch.save({"pi": self.pi.state_dict(), "q1": self.q1.state_dict(),
