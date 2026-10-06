@@ -43,6 +43,7 @@ import torch
 from env import AngleTacticEnv
 from sac import SACAgent, ReplayBuffer
 from wgan import WGANCurriculum
+from adversary import LADDER, TOP as LADDER_TOP
 from export import write_acmi
 from visualize import plot_3d_trajectory, plot_win_rate
 
@@ -54,11 +55,13 @@ for d in (LOG_DIR, CKPT_DIR, PLOT_DIR):
     os.makedirs(d, exist_ok=True)
 
 CKPT_FORMAT = "meol-rl-full-v1"
-EP_HEADER = ["episode", "epoch", "env_steps", "return", "outcome", "win_rate_100", "x0_range", "x0_aa", "x0_ata"]
+EP_HEADER = ["episode", "epoch", "env_steps", "return", "outcome", "win_rate_100", "x0_range", "x0_aa", "x0_ata",
+             "opponent"]
 EPOCH_HEADER = ["epoch", "episode", "env_steps", "d_loss", "wasserstein_est", "g_loss", "predictor_loss",
                 "n_valid_points", "epoch_win_rate", "epoch_completions", "feasible_buffer_size"]
 SAC_HEADER = ["epoch", "env_steps", "updates", "actor_frozen_updates", "q_loss", "pi_loss", "alpha", "entropy",
-              "sim_steps_per_s", "win", "loss", "timeout", "crash", "other"]
+              "sim_steps_per_s", "win", "loss", "timeout", "crash", "other",
+              "opp_level", "level_wins", "level_eps", "top_wins", "top_eps"]
 
 
 def _read_rows(path):
@@ -124,7 +127,8 @@ def train(total_env_steps=int(1.5e7), n_generator_samples=10, episodes_per_point
           mini_batch=256, max_ep_steps=6000, seed=0, wgan_critic_batch=64,
           plot_every_n_episodes=50, ckpt_every_n_epochs=5, obs_mode="extended", action_repeat=5,
           device="cpu", buffer_size=int(1e6), uniform_frac=0.3, terminate_on_kill=True,
-          resume=None, actor_warmup_updates=None, reward_scale=0.1):
+          resume=None, actor_warmup_updates=None, reward_scale=0.1,
+          opponent_curriculum=False, opponent_level=0, p_top=0.25):
     """n_generator_samples (Algorithm 2's n), episodes_per_point and
     wgan_critic_batch are NOT given in the paper -- flagged assumptions.
     mini_batch=256 is Table 2 exact. One epoch costs at most
@@ -135,13 +139,21 @@ def train(total_env_steps=int(1.5e7), n_generator_samples=10, episodes_per_point
     Q-loss rose 15-40x over run A's and alpha climbed 31x in three epochs at the
     maximum rate (policy entropy pinned below target, actions saturating) while
     crashes went 1 -> 9 -> 7. Scaling leaves the optimal policy unchanged and puts
-    the balancing alpha back near run A's ~0.02."""
+    the balancing alpha back near run A's ~0.02.
+    opponent_curriculum: each curriculum point plays adversary.LADDER[opp_level]
+    (straight -> turn4 -> turn6 -> bfm_energy -> bfm_angles), or the top rung -- the
+    paper's BFM expert -- with probability p_top. After each epoch the rung moves up
+    if the win rate on it was >= 0.5 and down if < 0.1. Against the full BFM the
+    warm-started policy won 0 of 10 even from easy starts, so the win reward and
+    Eq.(9) never had anything to work with."""
     config = {k: v for k, v in locals().items() if k != "resume"}
     np.random.seed(seed)
     torch.manual_seed(seed)
 
     env = AngleTacticEnv(max_steps=max_ep_steps, log_trajectory=True, obs_mode=obs_mode,
-                         action_repeat=action_repeat, terminate_on_kill=terminate_on_kill)
+                         action_repeat=action_repeat, terminate_on_kill=terminate_on_kill,
+                         adversary_type="ladder" if opponent_curriculum else "bfm",
+                         opponent_level=opponent_level if opponent_curriculum else None)
     obs_dim = env.observation_space.shape[0]
     act_dim = env.action_space.shape[0]
 
@@ -178,11 +190,13 @@ def train(total_env_steps=int(1.5e7), n_generator_samples=10, episodes_per_point
 
     episode, epoch, env_steps = counters["episode"], counters["epoch"], counters["env_steps"]
     win_hist = deque(counters["win_hist"], maxlen=100)  # rolling window over individual episodes
+    opp_level = int(counters.get("opp_level", opponent_level))
     frozen_left = warmup
 
     while env_steps < total_env_steps:
         t_epoch, steps_epoch0 = time.time(), env_steps
         outcomes, q_losses, pi_losses, entropies, n_updates, n_frozen = Counter(), [], [], [], 0, 0
+        opp_eps, opp_wins = Counter(), Counter()
 
         # ---- Algorithm 2, lines 5-11: k critic steps ----
         d_stats = curriculum.run_critic_steps(batch_size=wgan_critic_batch)
@@ -197,6 +211,8 @@ def train(total_env_steps=int(1.5e7), n_generator_samples=10, episodes_per_point
         for j in range(n_generator_samples):
             x0_j = tuple(float(v) for v in x0_batch[j])
             point_wins, point_completions, point_returns = 0, 0, []
+            if opponent_curriculum:   # same opponent for every episode at this point
+                env.adversary.level = LADDER_TOP if np.random.rand() < p_top else opp_level
 
             for _ in range(episodes_per_point):
                 if env_steps >= total_env_steps:
@@ -231,6 +247,8 @@ def train(total_env_steps=int(1.5e7), n_generator_samples=10, episodes_per_point
                 episode += 1
                 outcomes[info["outcome"]] += 1
                 is_win = info["outcome"] == "win"
+                opp_eps[info["opponent"]] += 1
+                opp_wins[info["opponent"]] += int(is_win)
                 win_hist.append(1 if is_win else 0)
                 point_wins += int(is_win)
                 point_completions += 1
@@ -240,7 +258,7 @@ def train(total_env_steps=int(1.5e7), n_generator_samples=10, episodes_per_point
 
                 with open(ep_log_path, "a", newline="") as f:
                     csv.writer(f).writerow([episode, epoch, env_steps, ep_ret, info["outcome"],
-                                             float(np.mean(win_hist)), *x0_j])
+                                             float(np.mean(win_hist)), *x0_j, info["opponent"]])
                 print(f"ep {episode:5d} | epoch {epoch:4d} | steps {env_steps:8d} "
                       f"| return {ep_ret:9.2f} | outcome {info['outcome']:15s} "
                       f"| win_rate(100) {float(np.mean(win_hist)):.3f}", flush=True)
@@ -272,6 +290,15 @@ def train(total_env_steps=int(1.5e7), n_generator_samples=10, episodes_per_point
             ])
         rate = (env_steps - steps_epoch0) / max(time.time() - t_epoch, 1e-6)
         other = sum(v for k, v in outcomes.items() if k not in ("win", "loss", "timeout", "crash"))
+        used_level = opp_level
+        level_name, top_name = LADDER[used_level], LADDER[LADDER_TOP]
+        level_wins, level_eps = opp_wins[level_name], opp_eps[level_name]
+        top_wins, top_eps = opp_wins[top_name], opp_eps[top_name]
+        if opponent_curriculum and level_eps >= 4:
+            if level_wins / level_eps >= 0.5 and opp_level < LADDER_TOP:
+                opp_level += 1
+            elif level_wins / level_eps < 0.1 and opp_level > 0:
+                opp_level -= 1
         with open(sac_log_path, "a", newline="") as f:
             csv.writer(f).writerow([
                 epoch, env_steps, n_updates, n_frozen,
@@ -279,17 +306,21 @@ def train(total_env_steps=int(1.5e7), n_generator_samples=10, episodes_per_point
                 float(np.mean(pi_losses)) if pi_losses else None,
                 agent.alpha.item(), float(np.mean(entropies)) if entropies else None, round(rate, 1),
                 outcomes["win"], outcomes["loss"], outcomes["timeout"], outcomes["crash"], other,
+                used_level if opponent_curriculum else None, level_wins, level_eps, top_wins, top_eps,
             ])
         print(f"[epoch {epoch:4d}] env_steps {env_steps:8d} | win {outcomes['win']} loss {outcomes['loss']} "
               f"timeout {outcomes['timeout']} crash {outcomes['crash']} other {other} | win_rate(100) "
               f"{float(np.mean(win_hist)) if win_hist else float('nan'):.3f} | feasible {len(curriculum.feasible)} "
               f"| alpha {agent.alpha.item():.4f} entropy {np.mean(entropies) if entropies else float('nan'):.2f}"
               f"{' (actor frozen)' if frozen_left > 0 else ''} "
-              f"| {rate:.0f} sim steps/s", flush=True)
+              f"| {rate:.0f} sim steps/s"
+              + (f" | opp {level_name} {level_wins}/{level_eps}, BFM {top_wins}/{top_eps}"
+                 f" -> next {LADDER[opp_level]}" if opponent_curriculum else ""), flush=True)
 
         epoch += 1
         counters = {"epoch": epoch, "episode": episode, "env_steps": env_steps,
-                    "updates": counters["updates"] + n_updates, "win_hist": list(win_hist)}
+                    "updates": counters["updates"] + n_updates, "win_hist": list(win_hist),
+                    "opp_level": opp_level}
         save_checkpoint(ckpt_path, agent, buffer, curriculum, counters, config)
         if (epoch - 1) % ckpt_every_n_epochs == 0:
             torch.save(agent.pi.state_dict(), os.path.join(CKPT_DIR, "angle_policy_wgan_latest.pt"))
@@ -335,6 +366,11 @@ if __name__ == "__main__":
                    help="run A's rule: kills only label the episode, never end it, no terminal reward")
     p.add_argument("--reward-scale", type=float, default=0.1,
                    help="multiplier on rewards inside the SAC backup (Table 2 'reward scale'); see train()")
+    p.add_argument("--opponent-curriculum", action="store_true",
+                   help="climb adversary.LADDER (straight .. bfm_angles) by win rate; see train()")
+    p.add_argument("--opponent-level", type=int, default=0, help="starting rung of the opponent ladder")
+    p.add_argument("--p-top", type=float, default=0.25,
+                   help="share of curriculum points played against the top rung (full BFM) regardless")
     p.add_argument("--resume", default=None,
                    help="checkpoint file (exact resume) or model folder such as models/angle_tactic_A (actor warm start)")
     p.add_argument("--actor-warmup-updates", type=int, default=None,
@@ -347,4 +383,5 @@ if __name__ == "__main__":
           obs_mode=args.obs_mode, action_repeat=args.action_repeat, device=args.device,
           buffer_size=args.buffer_size, uniform_frac=args.uniform_frac,
           terminate_on_kill=args.terminate_on_kill, resume=args.resume,
-          actor_warmup_updates=args.actor_warmup_updates, reward_scale=args.reward_scale)
+          actor_warmup_updates=args.actor_warmup_updates, reward_scale=args.reward_scale,
+          opponent_curriculum=args.opponent_curriculum, opponent_level=args.opponent_level, p_top=args.p_top)
