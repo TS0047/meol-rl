@@ -85,12 +85,36 @@ def _write_rows(path, header, rows):
         w.writerows(rows)
 
 
+_pending = {}   # path -> rows waiting for a file lock to clear
+
+
+def _append_row(path, row):
+    """Append one CSV row. If another program holds the file -- Excel locks a CSV it
+    has open -- keep the row in memory and retry on the next append, instead of
+    killing a multi-hour run (run W died this way mid-epoch)."""
+    rows = _pending.get(path, []) + [row]
+    try:
+        with open(path, "a", newline="") as f:
+            csv.writer(f).writerows(rows)
+        if path in _pending:
+            print(f"[log] {path} writable again; wrote {len(rows)} buffered rows", flush=True)
+        _pending.pop(path, None)
+    except PermissionError:
+        if path not in _pending:
+            print(f"[log] {path} is locked by another program (open in Excel?); buffering rows "
+                  f"until it is closed", flush=True)
+        _pending[path] = rows
+
+
 def _keep_epochs_before(path, header, epoch):
     """Drop rows from epochs >= `epoch` (an interrupted epoch's partial rows)."""
-    if os.path.exists(path):
-        _write_rows(path, header, [r for r in _read_rows(path) if int(r["epoch"]) < epoch])
-    else:
-        _write_rows(path, header, [])
+    try:
+        if os.path.exists(path):
+            _write_rows(path, header, [r for r in _read_rows(path) if int(r["epoch"]) < epoch])
+        else:
+            _write_rows(path, header, [])
+    except PermissionError:
+        raise SystemExit(f"{path} is locked by another program (open in Excel?). Close it and resume again.")
 
 
 def save_checkpoint(path, agent, buffer, curriculum, counters, config):
@@ -265,9 +289,8 @@ def train(total_env_steps=int(1.5e7), n_generator_samples=10, episodes_per_point
                 epoch_wins += int(is_win)
                 epoch_completions += 1
 
-                with open(ep_log_path, "a", newline="") as f:
-                    csv.writer(f).writerow([episode, epoch, env_steps, ep_ret, info["outcome"],
-                                             float(np.mean(win_hist)), *x0_j, info["opponent"]])
+                _append_row(ep_log_path, [episode, epoch, env_steps, ep_ret, info["outcome"],
+                                          float(np.mean(win_hist)), *x0_j, info["opponent"]])
                 print(f"ep {episode:5d} | epoch {epoch:4d} | steps {env_steps:8d} "
                       f"| return {ep_ret:9.2f} | outcome {info['outcome']:15s} "
                       f"| win_rate(100) {float(np.mean(win_hist)):.3f}", flush=True)
@@ -289,8 +312,7 @@ def train(total_env_steps=int(1.5e7), n_generator_samples=10, episodes_per_point
         g_stats = curriculum.update_from_results(z, x0_batch, per_point_win_rates, per_point_returns)
 
         epoch_win_rate = (epoch_wins / epoch_completions) if epoch_completions > 0 else float("nan")
-        with open(epoch_log_path, "a", newline="") as f:
-            csv.writer(f).writerow([
+        _append_row(epoch_log_path, [
                 epoch, episode, env_steps,
                 d_stats.get("d_loss") if d_stats else None,
                 d_stats.get("wasserstein_est") if d_stats else None,
@@ -308,8 +330,7 @@ def train(total_env_steps=int(1.5e7), n_generator_samples=10, episodes_per_point
                 opp_level += 1
             elif level_wins / level_eps < 0.1 and opp_level > 0:
                 opp_level -= 1
-        with open(sac_log_path, "a", newline="") as f:
-            csv.writer(f).writerow([
+        _append_row(sac_log_path, [
                 epoch, env_steps, n_updates, n_frozen,
                 float(np.mean(q_losses)) if q_losses else None,
                 float(np.mean(pi_losses)) if pi_losses else None,
@@ -336,7 +357,10 @@ def train(total_env_steps=int(1.5e7), n_generator_samples=10, episodes_per_point
             torch.save(curriculum.G.state_dict(), os.path.join(CKPT_DIR, "wgan_generator_latest.pt"))
             torch.save(curriculum.D.state_dict(), os.path.join(CKPT_DIR, "wgan_critic_latest.pt"))
             if episode > 0:
-                plot_win_rate(ep_log_path, os.path.join(PLOT_DIR, "win_rate_curve.png"))
+                try:
+                    plot_win_rate(ep_log_path, os.path.join(PLOT_DIR, "win_rate_curve.png"))
+                except OSError as e:   # a locked/open log must not end the run
+                    print(f"[log] skipped win-rate plot: {e}", flush=True)
 
     torch.save(agent.pi.state_dict(), os.path.join(CKPT_DIR, "angle_policy_wgan_final.pt"))
     torch.save(curriculum.G.state_dict(), os.path.join(CKPT_DIR, "wgan_generator_final.pt"))
