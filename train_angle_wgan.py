@@ -33,6 +33,7 @@ Resuming (--resume):
 
 import os
 import csv
+import json
 import time
 import argparse
 from collections import Counter, deque
@@ -224,6 +225,8 @@ def train(total_env_steps=int(1.5e7), n_generator_samples=10, episodes_per_point
     episode, epoch, env_steps = counters["episode"], counters["epoch"], counters["env_steps"]
     win_hist = deque(counters["win_hist"], maxlen=100)  # rolling window over individual episodes
     opp_level = int(counters.get("opp_level", opponent_level))
+    best_wr, best_ep = float(counters.get("best_win_rate", -1.0)), counters.get("best_epoch")
+    os.makedirs(os.path.join(CKPT_DIR, "snapshots"), exist_ok=True)
     frozen_left = warmup
 
     while env_steps < total_env_steps:
@@ -347,10 +350,22 @@ def train(total_env_steps=int(1.5e7), n_generator_samples=10, episodes_per_point
               + (f" | opp {level_name} {level_wins}/{level_eps}, BFM {top_wins}/{top_eps}"
                  f" -> next {LADDER[opp_level]}" if opponent_curriculum else ""), flush=True)
 
+        # Keep the best policy: checkpoint_latest.pt is overwritten every epoch, and run W's
+        # ~80%-win peak (epochs 123-127) was lost that way when it later dipped.
+        if len(win_hist) == win_hist.maxlen and np.mean(win_hist) > best_wr:
+            best_wr, best_ep = float(np.mean(win_hist)), epoch
+            torch.save(agent.pi.state_dict(), os.path.join(CKPT_DIR, "best_actor.pt"))
+            with open(os.path.join(CKPT_DIR, "best_actor.json"), "w") as f:
+                json.dump({"epoch": epoch, "env_steps": env_steps, "win_rate_100": best_wr,
+                           "opponent": LADDER[opp_level] if opponent_curriculum else "bfm_angles"}, f, indent=2)
+            print(f"[best] epoch {epoch}: rolling win rate {best_wr:.2f} -> checkpoints/best_actor.pt", flush=True)
+        if epoch % 5 == 0:   # small actor-only history (~0.3 MB each) for evaluating the run's course
+            torch.save(agent.pi.state_dict(), os.path.join(CKPT_DIR, "snapshots", f"actor_epoch{epoch:04d}.pt"))
+
         epoch += 1
         counters = {"epoch": epoch, "episode": episode, "env_steps": env_steps,
                     "updates": counters["updates"] + n_updates, "win_hist": list(win_hist),
-                    "opp_level": opp_level}
+                    "opp_level": opp_level, "best_win_rate": best_wr, "best_epoch": best_ep}
         save_checkpoint(ckpt_path, agent, buffer, curriculum, counters, config)
         if (epoch - 1) % ckpt_every_n_epochs == 0:
             torch.save(agent.pi.state_dict(), os.path.join(CKPT_DIR, "angle_policy_wgan_latest.pt"))
