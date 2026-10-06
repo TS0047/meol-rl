@@ -43,6 +43,7 @@ class Constants:
                                # point of no return (rho = 1), leaving the agent time to react.
     k_ground: float = 3.0      # P_ground weight; 0.0 disables it (paper-faithful)
     gate_shaping: bool = True  # gate positive shaping by ground safety; False = paper-faithful ungated
+    k_negg: float = 1.0        # P_negg weight (penalty capped at -k_negg); 0.0 disables -- NOT in paper
 
 
 C = Constants()
@@ -134,6 +135,17 @@ def P_ground(state: dict, c: Constants = C) -> float:
     return -c.k_ground * (1.0 - ground_safety(state, c))
 
 
+def P_negg(nz: float, c: Constants = C) -> float:
+    """Negative-g penalty -- our addition, not in the paper. 0 for nz >= 0, ramping to
+    -k_negg at -1 g and capped there. Policies settled into flying INVERTED, holding
+    altitude on push (about -1.15 g) with full rudder: stable and survivable, but an
+    F-16 pushes only ~-3 g against ~+9 g pulling, so it can barely turn its nose and
+    never builds a gun solution (2 min behind a straight-and-level target without
+    one). Manoeuvres that pass through inverted -- split-S, barrel roll -- are pulled
+    at positive g and are not penalised; only sustained push-flight is."""
+    return -c.k_negg * min(1.0, max(0.0, -nz))
+
+
 def safety_gate(state: dict, c: Constants = C) -> float:
     """Multiplier in [0, 1] on POSITIVE shaping -- our addition, not in the paper.
     Safety must outrank offence, not just compete with it: once the potentials pay
@@ -158,6 +170,7 @@ def regularization(state: dict, action: list[float], c: Constants = C) -> float:
         + P_beta(state["beta"], c)
         + C_action(action)
         + P_ground(state, c)
+        + P_negg(state.get("Nz", 1.0), c)
     )
 
 
