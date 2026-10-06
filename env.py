@@ -77,13 +77,21 @@ GOAL_BONUS = 1.0
 #   loss -LOSS_PENALTY equal to CRASH_PENALTY: both lose the aircraft, so neither may
 #                      look better than the other, and both exceed the discounted
 #                      cost of surviving (~850, see CRASH_PENALTY).
-#   timeout / disengage / adversary crash: 0.
+#   timeout / adversary crash: 0; disengage: see DISENGAGE_PENALTY.
 # terminate_on_kill=False restores the old rule (first one-sided step labels the
 # episode, nothing ends it, no terminal reward) for comparison with run A.
 KILL_DWELL_S = 0.5
 KILL_DWELL_STEPS = int(round(KILL_DWELL_S / DT))
 WIN_REWARD = 1500.0
 LOSS_PENALTY = CRASH_PENALTY
+
+# Leaving the fight (range beyond DISENGAGE_RANGE_M) ends the episode at the price of a
+# loss. At 0 it was a free exit: once losses cost -1000, an agent that loses most fights
+# simply ran away (run C3: 16 of 20 episodes disengaged, including every BFM episode).
+# 12 km rather than 9 km: a straight-flying target from a bad start used to pass 9 km
+# while the agent was still turning around to chase it.
+DISENGAGE_RANGE_M = 12000.0
+DISENGAGE_PENALTY = LOSS_PENALTY
 
 FT2M = 0.3048
 KTS2MPS = 0.514444
@@ -365,8 +373,8 @@ class AngleTacticEnv(gym.Env):
             # crashed" as a win -- terminate (avoids the Phi_energy
             # instability as E_adv collapses) but treat as a neutral draw.
             return bonus, 0.0, True, "adversary_crash"
-        if geom["Range"] >= 9000.0:
-            return bonus, 0.0, True, "disengaged"
+        if geom["Range"] >= DISENGAGE_RANGE_M:
+            return bonus, -DISENGAGE_PENALTY, True, "disengaged"
         return bonus, 0.0, False, "ongoing"
 
     def _label_outcome(self, outcome):
