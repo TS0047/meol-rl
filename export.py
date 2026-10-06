@@ -13,6 +13,17 @@ def _lla(pos_ned):
     return lat, lon, alt
 
 
+def _transform(pos, att):
+    """ACMI T= field: lon|lat|alt, plus |roll|pitch|yaw when attitude was logged
+    (Tacview then draws the aircraft's orientation, not just its track)."""
+    lat, lon, alt = _lla(pos)
+    t = f"{lon:.7f}|{lat:.7f}|{alt:.1f}"
+    if att is not None:
+        roll, pitch, yaw = att
+        t += f"|{roll:.1f}|{pitch:.1f}|{yaw % 360:.1f}"
+    return t
+
+
 def write_acmi(trajectory, path):
     if not trajectory:
         return
@@ -22,7 +33,5 @@ def write_acmi(trajectory, path):
         for row in trajectory:
             t = row["t"]
             f.write(f"#{t:.2f}\n")
-            lat, lon, alt = _lla(row["self_pos"])
-            f.write(f"SELF,T={lon:.7f}|{lat:.7f}|{alt:.1f},Name=F-16,Color=Blue\n")
-            lat, lon, alt = _lla(row["adv_pos"])
-            f.write(f"ADV,T={lon:.7f}|{lat:.7f}|{alt:.1f},Name=F-16,Color=Red\n")
+            f.write(f"SELF,T={_transform(row['self_pos'], row.get('self_att'))},Name=F-16,Color=Blue\n")
+            f.write(f"ADV,T={_transform(row['adv_pos'], row.get('adv_att'))},Name=F-16,Color=Red\n")

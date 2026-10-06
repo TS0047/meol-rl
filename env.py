@@ -59,11 +59,30 @@ ACTION_REPEAT = 5
 # say whether the bandit is left or right, above or below).
 OBS_DIMS = {"paper": 8, "extended": 21}
 
-# Small sparse bonus added to R_goal on every step in which self satisfies the
-# shoot condition (r < SHOOT_RANGE_FT and ATA <= SHOOT_ATA_DEG). Deliberately minor
-# next to c0=10 shaping. Episodes are NEVER terminated by a goal; win/loss is decided
-# at episode end by who satisfied the condition FIRST (self.first_goal).
+# Small dense bonus (+/-) added on every sim step in which one side ALONE satisfies its
+# shoot condition. Deliberately minor next to c0=10 shaping; it warns that a kill is
+# building up before the terminal outcome below arrives.
 GOAL_BONUS = 1.0
+
+# Gun kill = sparse combat result, R_goal of Eq.(27). A side wins when it alone holds
+# the other inside its WEZ (Sec 2.4) for KILL_DWELL_S without a break -- a tracking
+# solution, so a 20 ms graze on a head-on pass is not a kill -- and the episode ENDS,
+# as a shoot-down ends the paper's engagements.
+#   win  +WIN_REWARD   must beat the discounted shaping an agent could collect by
+#                      loitering just outside the WEZ instead of shooting: up to
+#                      ~8 / step / (1 - gamma) ~ 800, so 1500. (When episodes never
+#                      ended, a cautious draw out-earned a win: timeouts averaged
+#                      +150..+226 in run A, wins -150..-1173.)
+#   loss -LOSS_PENALTY equal to CRASH_PENALTY: both lose the aircraft, so neither may
+#                      look better than the other, and both exceed the discounted
+#                      cost of surviving (~850, see CRASH_PENALTY).
+#   timeout / disengage / adversary crash: 0.
+# terminate_on_kill=False restores the old rule (first one-sided step labels the
+# episode, nothing ends it, no terminal reward) for comparison with run A.
+KILL_DWELL_S = 0.5
+KILL_DWELL_STEPS = int(round(KILL_DWELL_S / DT))
+WIN_REWARD = 1500.0
+LOSS_PENALTY = CRASH_PENALTY
 
 FT2M = 0.3048
 KTS2MPS = 0.514444
@@ -174,9 +193,10 @@ class AngleTacticEnv(gym.Env):
     metadata = {"render_modes": []}
 
     def __init__(self, max_steps=6000, log_trajectory=False, adversary_type="bfm",
-                 obs_mode="extended", action_repeat=ACTION_REPEAT):
+                 obs_mode="extended", action_repeat=ACTION_REPEAT, terminate_on_kill=True):
         """max_steps counts 50 Hz sim steps (6000 = 120 s), whatever action_repeat is.
-        obs_mode="paper", action_repeat=1 reproduces the paper's interface exactly."""
+        obs_mode="paper", action_repeat=1 reproduces the paper's interface exactly;
+        terminate_on_kill=False reproduces run A's never-ending, first-graze outcome rule."""
         super().__init__()
         if obs_mode not in OBS_DIMS:
             raise ValueError(f"unknown obs_mode {obs_mode!r}, expected one of {list(OBS_DIMS)}")
@@ -184,6 +204,8 @@ class AngleTacticEnv(gym.Env):
         self.log_trajectory = log_trajectory
         self.obs_mode = obs_mode
         self.action_repeat = int(action_repeat)
+        self.terminate_on_kill = bool(terminate_on_kill)
+        self._dwell_self = self._dwell_adv = 0
         self.observation_space = spaces.Box(low=-1e4, high=1e4, shape=(OBS_DIMS[obs_mode],),
                                             dtype=np.float32)
         self.action_space = spaces.Box(low=-1.0, high=1.0, shape=(4,), dtype=np.float32)
@@ -252,6 +274,7 @@ class AngleTacticEnv(gym.Env):
         self.step_count = 0
         self.trajectory = []
         self.first_goal = None
+        self._dwell_self = self._dwell_adv = 0
         self.adversary.reset()
         self._log_step(s_self, s_adv, geom, prox)
         return self._obs(geom, prox, s_self, s_adv), {}
@@ -265,7 +288,7 @@ class AngleTacticEnv(gym.Env):
         self.fdm_self["fcs/elevator-cmd-norm"] = float(action[2])
         self.fdm_self["fcs/throttle-cmd-norm[0]"] = float(np.clip((action[3] + 1) / 2, 0.0, 1.0))
 
-        rewards, crash_penalty = [], 0.0
+        rewards, terminal = [], 0.0
         for _ in range(self.action_repeat):
             s_self_prev = _read_state(self.fdm_self)
             s_adv_prev = _read_state(self.fdm_adv)
@@ -284,9 +307,7 @@ class AngleTacticEnv(gym.Env):
             geom = combat_geometry(s_self["pos"], s_self["e_hat"], s_adv["pos"], s_adv["e_hat"])
             prox = proximity(s_self["pos"], s_self["v"], s_adv["pos"], s_adv["v"])
 
-            R_goal, terminated, outcome = self._check_outcome(geom, s_self, s_adv)
-            if outcome == "crash":
-                crash_penalty, R_goal = R_goal, 0.0   # paid once below, not averaged away
+            bonus, terminal, terminated, outcome = self._check_outcome(geom, s_self, s_adv)
             truncated = self.step_count >= self.max_steps
 
             state_dict = {
@@ -296,11 +317,11 @@ class AngleTacticEnv(gym.Env):
                 "alpha_AoA": s_self["alpha_deg"], "beta": s_self["beta_deg"],
                 "v_up": s_self["v"][2], "V_true": s_self["vt_mps"],
             }
-            rewards.append(R_angle(state_dict, list(action), R_goal))
+            rewards.append(R_angle(state_dict, list(action), bonus))
             self._log_step(s_self, s_adv, geom, prox)
             if terminated or truncated:
                 break
-        reward = float(np.mean(rewards)) + crash_penalty
+        reward = float(np.mean(rewards)) + terminal   # terminal outcome paid once, not averaged away
 
         if truncated and not terminated:
             outcome = "timeout"
@@ -311,30 +332,37 @@ class AngleTacticEnv(gym.Env):
         return self._obs(geom, prox, s_self, s_adv), reward, terminated, truncated, info
 
     def _check_outcome(self, geom, s_self, s_adv):
+        """Returns (bonus, terminal, terminated, outcome). bonus is averaged into the
+        per-decision reward with the shaping; terminal is paid once, unaveraged."""
         in_band = SHOOT_MIN_RANGE_M <= geom["Range"] <= SHOOT_RANGE_M
         self_goal = in_band and geom["ATA"] <= SHOOT_ATA_DEG
         adv_goal = in_band and geom["AA"] >= BEHIT_AA_DEG
-        # Only a one-sided hit decides win/loss. With the lenient cones a head-on
-        # pass puts both aircraft inside each other's cone on the same step -- that
-        # is a merge, not a decision, so it must not lock first_goal.
-        if self.first_goal is None and self_goal != adv_goal:
-            self.first_goal = "self" if self_goal else "adversary"
-        if self_goal:
-            bonus = GOAL_BONUS
-        elif adv_goal:
-            bonus = -GOAL_BONUS
-        else:
-            bonus = 0.0
+        # Only a one-sided hit counts. With the lenient cones a head-on pass puts both
+        # aircraft inside each other's cone at once -- a merge, not a decision -- so it
+        # neither builds a kill nor earns a bonus.
+        one_self, one_adv = self_goal and not adv_goal, adv_goal and not self_goal
+        self._dwell_self = self._dwell_self + 1 if one_self else 0
+        self._dwell_adv = self._dwell_adv + 1 if one_adv else 0
+        bonus = GOAL_BONUS if one_self else -GOAL_BONUS if one_adv else 0.0
         if s_self["alt_m"] <= 200.0:
-            return -CRASH_PENALTY, True, "crash"
+            return 0.0, -CRASH_PENALTY, True, "crash"
+        if self.terminate_on_kill:
+            if self._dwell_self >= KILL_DWELL_STEPS:
+                self.first_goal = "self"
+                return bonus, WIN_REWARD, True, "win"
+            if self._dwell_adv >= KILL_DWELL_STEPS:
+                self.first_goal = "adversary"
+                return bonus, -LOSS_PENALTY, True, "loss"
+        elif self.first_goal is None and (one_self or one_adv):
+            self.first_goal = "self" if one_self else "adversary"   # run A's rule: label only
         if s_adv["alt_m"] <= 200.0:
             # Neither this nor the base paper (Sec 2.4) scores "opponent
             # crashed" as a win -- terminate (avoids the Phi_energy
             # instability as E_adv collapses) but treat as a neutral draw.
-            return bonus, True, "adversary_crash"
+            return bonus, 0.0, True, "adversary_crash"
         if geom["Range"] >= 9000.0:
-            return bonus, True, "disengaged"
-        return bonus, False, "ongoing"
+            return bonus, 0.0, True, "disengaged"
+        return bonus, 0.0, False, "ongoing"
 
     def _label_outcome(self, outcome):
         """Final episode label. Win/loss = who satisfied the WEZ condition first.
@@ -351,4 +379,6 @@ class AngleTacticEnv(gym.Env):
             "self_pos": s_self["pos"].copy(), "adv_pos": s_adv["pos"].copy(),
             "Range": geom["Range"], "AA": geom["AA"], "ATA": geom["ATA"], "HCA": geom["HCA"],
             "Proximity": prox, "E_self": _energy(s_self), "E_adv": _energy(s_adv),
+            "self_att": (s_self["roll_deg"], s_self["pitch_deg"], s_self["psi_deg"]),   # deg, for ACMI
+            "adv_att": (s_adv["roll_deg"], s_adv["pitch_deg"], s_adv["psi_deg"]),
         })
