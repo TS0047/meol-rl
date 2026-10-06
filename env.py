@@ -40,8 +40,8 @@ INIT_THROTTLE = 0.7             # initial throttle command, both aircraft
 CRASH_PENALTY = 1000.0          # flat terminal reward on self crash = -CRASH_PENALTY.
                                 # Must exceed the discounted cost of surviving, worst_step_loss / (1 - gamma):
                                 # a bad-but-flyable step (deck, slow, high AoA, sideslip, bandit on our tail,
-                                # diving at the deck so P_ground is maxed) scores ~-7.5, and gamma = 0.99
-                                # (Table 2) gives ~750, so crashing never pays. Not scaled by remaining steps:
+                                # diving at the deck so P_ground is maxed at -3) scores ~-8.5, and gamma = 0.99
+                                # (Table 2) gives ~850, so crashing never pays. Not scaled by remaining steps:
                                 # discounting caps the value of the future at ~100 agent decisions, and
                                 # -10 * remaining (up to -60000) would swamp the Q-targets.
 
@@ -294,7 +294,7 @@ class AngleTacticEnv(gym.Env):
                 "E_self": _energy(s_self), "E_adv": _energy(s_adv),
                 "altitude": s_self["alt_m"], "VIAS": s_self["vias_mps"],
                 "alpha_AoA": s_self["alpha_deg"], "beta": s_self["beta_deg"],
-                "v_up": s_self["v"][2],
+                "v_up": s_self["v"][2], "V_true": s_self["vt_mps"],
             }
             rewards.append(R_angle(state_dict, list(action), R_goal))
             self._log_step(s_self, s_adv, geom, prox)
