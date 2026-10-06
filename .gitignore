@@ -11,5 +11,6 @@ runs/
 *.pt
 *.acmi
 
-# trained models deliberately kept in the repo (small: ~0.7 MB per run)
+# trained models deliberately kept in the repo (small: under 10 MB per run), incl. example Tacview flights
 !models/**/*.pt
+!models/**/*.acmi
