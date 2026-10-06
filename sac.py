@@ -85,6 +85,19 @@ class ReplayBuffer:
                 torch.as_tensor(self.rew[idx]), torch.as_tensor(self.next_obs[idx]),
                 torch.as_tensor(self.done[idx]))
 
+    def state_dict(self):
+        n = self.size
+        return {"obs": self.obs[:n].copy(), "next_obs": self.next_obs[:n].copy(), "act": self.act[:n].copy(),
+                "rew": self.rew[:n].copy(), "done": self.done[:n].copy(), "ptr": self.ptr, "size": n}
+
+    def load_state_dict(self, sd):
+        n = sd["size"]
+        if n > self.max_size:
+            raise ValueError(f"checkpoint holds {n} transitions, buffer capacity is {self.max_size}")
+        for k in ("obs", "next_obs", "act", "rew", "done"):
+            getattr(self, k)[:n] = sd[k]
+        self.ptr, self.size = sd["ptr"] % self.max_size, n
+
 
 class SACAgent:
     """Implements Algorithm 1's soft option-action-value + intra-option policy updates.
@@ -141,7 +154,9 @@ class SACAgent:
                 for p, pt in zip(q.parameters(), q_targ.parameters()):
                     pt.data.mul_(1 - self.tau).add_(self.tau * p.data)
 
-    def update(self, batch):
+    def update(self, batch, update_actor=True):
+        """update_actor=False trains only the critics (alpha frozen): used to fit fresh
+        Q-networks to a warm-started actor before the actor follows their gradients."""
         obs, act, rew, next_obs, done = (t.to(self.device, non_blocking=True) for t in batch)
 
         # ---- Eq.(15)-(16): bootstrapped target from the smaller of the two target Qs ----
@@ -156,6 +171,11 @@ class SACAgent:
         self.q_opt.zero_grad()
         q_loss.backward()
         self.q_opt.step()
+
+        if not update_actor:
+            self._soft_update()
+            return {"q_loss": q_loss.item(), "pi_loss": float("nan"),
+                    "alpha": self.alpha.item(), "alpha_loss": float("nan")}
 
         # ---- Eq.(17)-(18): reparameterized policy gradient (autograd = chain rule) ----
         a, logp, _ = self.pi.sample(obs)
@@ -179,3 +199,20 @@ class SACAgent:
     def save(self, path):
         torch.save({"pi": self.pi.state_dict(), "q1": self.q1.state_dict(),
                     "q2": self.q2.state_dict(), "log_alpha": self.log_alpha}, path)
+
+    def state_dict(self):
+        """Everything needed to resume training exactly (networks, targets, optimizers, alpha)."""
+        mods = ("pi", "q1", "q2", "q1_targ", "q2_targ", "q_opt", "pi_opt", "alpha_opt")
+        sd = {m: getattr(self, m).state_dict() for m in mods}
+        sd["log_alpha"] = self.log_alpha.detach().cpu()
+        return sd
+
+    def load_state_dict(self, sd):
+        for m in ("pi", "q1", "q2", "q1_targ", "q2_targ", "q_opt", "pi_opt", "alpha_opt"):
+            getattr(self, m).load_state_dict(sd[m])
+        with torch.no_grad():
+            self.log_alpha.copy_(sd["log_alpha"].to(self.device))
+
+    def set_alpha(self, alpha):
+        with torch.no_grad():
+            self.log_alpha.fill_(float(np.log(alpha)))
