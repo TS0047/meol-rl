@@ -54,6 +54,15 @@ PLOT_DIR = os.path.join(HERE, "plots")
 for d in (LOG_DIR, CKPT_DIR, PLOT_DIR):
     os.makedirs(d, exist_ok=True)
 
+
+def set_run_dir(run_dir):
+    """Write this run's logs/, checkpoints/ and plots/ under run_dir instead of next to
+    this file, so several runs can train side by side without overwriting each other."""
+    global LOG_DIR, CKPT_DIR, PLOT_DIR
+    LOG_DIR, CKPT_DIR, PLOT_DIR = (os.path.join(run_dir, d) for d in ("logs", "checkpoints", "plots"))
+    for d in (LOG_DIR, CKPT_DIR, PLOT_DIR):
+        os.makedirs(d, exist_ok=True)
+
 CKPT_FORMAT = "meol-rl-full-v1"
 EP_HEADER = ["episode", "epoch", "env_steps", "return", "outcome", "win_rate_100", "x0_range", "x0_aa", "x0_ata",
              "opponent"]
@@ -371,11 +380,19 @@ if __name__ == "__main__":
     p.add_argument("--opponent-level", type=int, default=0, help="starting rung of the opponent ladder")
     p.add_argument("--p-top", type=float, default=0.25,
                    help="share of curriculum points played against the top rung (full BFM) regardless")
+    p.add_argument("--run-dir", default=None,
+                   help="put logs/, checkpoints/, plots/ under this folder (e.g. runs/D_fresh); default: next to this file")
+    p.add_argument("--torch-threads", type=int, default=0,
+                   help="cap PyTorch CPU threads (0 = PyTorch default); useful when runs share the CPU")
     p.add_argument("--resume", default=None,
                    help="checkpoint file (exact resume) or model folder such as models/angle_tactic_A (actor warm start)")
     p.add_argument("--actor-warmup-updates", type=int, default=None,
                    help="critic-only updates before the actor trains (default 20000 for a model-folder warm start, else 0)")
     args = p.parse_args()
+    if args.run_dir:
+        set_run_dir(args.run_dir)
+    if args.torch_threads > 0:
+        torch.set_num_threads(args.torch_threads)
     train(total_env_steps=args.total_env_steps, n_generator_samples=args.n_generator_samples,
           episodes_per_point=args.episodes_per_point, mini_batch=args.mini_batch,
           max_ep_steps=args.max_ep_steps, seed=args.seed, wgan_critic_batch=args.wgan_critic_batch,

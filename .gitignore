@@ -7,6 +7,7 @@ venv/
 logs/
 checkpoints/
 plots/
+runs/
 *.pt
 *.acmi
 
