@@ -18,13 +18,13 @@ the full BFMAgent, selected by `level` before each episode.
 
 import numpy as np
 
-from f16_bfm_agent import AcState, BFMAgent
-from dogfight_sim import StraightBot, TurnBot
+from f16_bfm_agent import UP, AcState, BFMAgent, Cmd
+from dogfight_sim import TurnBot
 
 DT = 1.0 / 50.0  # matches env.py's fdm.set_dt(1/50)
 
 # Opponent curriculum, easiest first. Every rung is a coherent, ground-safe pilot:
-#   straight    non-manoeuvring target (dogfight_sim.StraightBot): teaches closing and tracking
+#   straight    non-manoeuvring target at STRAIGHT_KCAS: teaches closing and tracking
 #   turn4/turn6 constant-g level turn, random side (dogfight_sim.TurnBot): lead pursuit
 #   bfm_energy  BFMAgent, sustained-g energy fight
 #   bfm_angles  BFMAgent, max-g angles fight -- the paper's rule-based expert (Sec 5)
@@ -33,6 +33,13 @@ DT = 1.0 / 50.0  # matches env.py's fdm.set_dt(1/50)
 # crashed itself in 3 of 8 test episodes at the midpoint.
 LADDER = ("straight", "turn4", "turn6", "bfm_energy", "bfm_angles")
 TOP = len(LADDER) - 1
+
+# The bottom rung must be catchable by a beginner. dogfight_sim.StraightBot cruises at 380
+# KCAS (~230 m/s true at 4500 m), faster than our 200 m/s start, so an agent not yet using
+# afterburner could never close: 43 of 53 episodes disengaged and the rest ended in
+# spirals while chasing (run D, epochs 0-5, no wins). 250 KCAS (~160 m/s true) is slower
+# than we start, so pointing at it is enough to close.
+STRAIGHT_KCAS = 250.0
 
 
 def _to_ac_state(s):
@@ -82,6 +89,17 @@ class BFMAdversary:
         return _controls_to_action(c)
 
 
+class _StraightTarget:
+    """Wings-level, constant-speed target: dogfight_sim.StraightBot at a chosen speed."""
+
+    def __init__(self, v_kcas=STRAIGHT_KCAS):
+        self.inner = BFMAgent(dt=DT, name="adversary")
+        self.v_kcas = v_kcas
+
+    def act(self, me, tg, t):
+        return self.inner._flight_control(me, Cmd(lift=UP, n=1.0, v_des=self.v_kcas))
+
+
 class LadderAdversary:
     """Opponent curriculum: plays LADDER[level], re-read at every reset(), so the
     trainer can move it between episodes. level=TOP is plain BFMAdversary."""
@@ -97,7 +115,7 @@ class LadderAdversary:
         self.current = name = LADDER[self.level]
         seed = int(self._rng.integers(0, 2**31 - 1))
         if name == "straight":
-            self._bot = StraightBot("adversary", DT)
+            self._bot = _StraightTarget()
         elif name in ("turn4", "turn6"):
             self._bot = TurnBot("adversary", DT, g=4.0 if name == "turn4" else 6.0,
                                 side=int(self._rng.choice([-1, 1])))
