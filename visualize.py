@@ -26,7 +26,9 @@ def plot_trajectory(trajectory, out_path, title=""):
     ax3d = fig.add_subplot(2, 4, 1, projection="3d")
     ax3d.plot(self_pos[:, 0], self_pos[:, 1], self_pos[:, 2], "b-", label="self fighter")
     ax3d.plot(adv_pos[:, 0], adv_pos[:, 1], adv_pos[:, 2], "r-", label="adversary")
-    ax3d.set_xlabel("East (m)"); ax3d.set_ylabel("North (m)"); ax3d.set_zlabel("Altitude (m)")
+    ax3d.set_xlabel("East (m)"); ax3d.set_ylabel("North (m)")
+    # z-label as the title: a 3D axes draws its z-label outside its own box, onto the AA panel
+    ax3d.set_title("trajectory (vertical axis: altitude, m)", fontsize=8)
     ax3d.legend(fontsize=7)
 
     specs = [
