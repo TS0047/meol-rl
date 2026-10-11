@@ -1,13 +1,37 @@
-# Frozen-policy engagements, run W
+# Frozen-policy engagements
 
-Each folder is one policy from [`models/angle_tactic_W`](../models/angle_tactic_W) flown by
-[`fly_policy.py`](../fly_policy.py) with **frozen weights**:
+Each folder is one trained policy flown by [`fly_policy.py`](../fly_policy.py) with **frozen weights**:
 - eval mode and no gradients;
 - deterministic actions: tanh of the Gaussian mean, no exploration noise;
 - seeded BFM randomness, so every run is repeatable.
 
-All three use the same **38 starts**: 8 named Table 1 geometries plus 30 seeded random ones
+Every folder uses the same **38 starts**: 8 named Table 1 geometries plus 30 seeded random ones
 (`--random-starts 30 --seed 2026`). The opponent is the full Shaw-doctrine `BFMAgent` (`bfm_angles`).
+That makes the folders directly comparable, start by start, through their `summary.csv`.
+
+## All three tactics at a glance
+
+| Folder | Tactic, policy | Win | Timeout | Loss | Median win time |
+|---|---|---|---|---|---|
+| [`W_final_15M`](W_final_15M) | angle, final (15M) | 23 | 15 | 0 | 12.3 s |
+| [`S_final`](S_final) | snapshot, final (15M) | **37** | 1 | 0 | 18.8 s |
+| [`S_best`](S_best) | snapshot, best (epoch 176) | 32 | 5 | 1 | 16.6 s |
+| [`E_final`](E_final) | energy, final (15M) | 30 | 4 | 4 | 13.2 s |
+| [`E_best`](E_best) | energy, best (epoch 276) | 30 | 0 | 8 | 14.4 s |
+
+**What separates them:**
+- **Angle** never loses, but escapes every defensive start into a draw. See "What the timeouts are" below.
+- **Snapshot** wins almost everything, but 13 of its 37 wins exploit the BFM's ground-avoidance rule.
+  It drags the expert into a dive below ~1,100 m, where `BFMAgent._safety` forces a predictable
+  wings-level pull-up, then turns onto it. About 24 wins are clean. Details:
+  [`models/angle_tactic_S`](../models/angle_tactic_S).
+- **Energy** wins every fight it wins in under 30 s and above 1,100 m, with no exploit. It loses some
+  defensive starts instead of escaping them.
+- **Shared:** all three win the head-on start in about 8 s, through the BFM's offset entry at the merge.
+
+## Angle tactic (run W) in detail
+
+These three are policies from [`models/angle_tactic_W`](../models/angle_tactic_W).
 
 | Folder | Policy | Win | Timeout | Loss | Crash | Median win time |
 |---|---|---|---|---|---|---|
@@ -19,7 +43,7 @@ All three use the same **38 starts**: 8 named Table 1 geometries plus 30 seeded 
 - They agree on 29 of the 38 starts. All three win the same 19 and time out on the same 10.
 - The final policy never loses, and it wins faster. Against the best policy, it turns that policy's 3 losses into wins but 3 of its wins into timeouts. Compare the `summary.csv` files start by start.
 
-## What the timeouts are
+### What the timeouts are
 
 All 15 of the final policy's timeouts are the same manoeuvre. From a defensive or beam start the
 agent **turns away and extends in a dive**:
