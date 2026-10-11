@@ -44,6 +44,8 @@ class Constants:
     k_ground: float = 3.0      # P_ground weight; 0.0 disables it (paper-faithful)
     gate_shaping: bool = True  # gate positive shaping by ground safety; False = paper-faithful ungated
     k_negg: float = 1.0        # P_negg weight (penalty capped at -k_negg); 0.0 disables -- NOT in paper
+    snapshot_aa_in_range: bool = True   # R_snapshot pays phi_AA * phi_range, not bare phi_AA -- NOT in
+                                        # paper; False = Eq.(40) literally. See R_snapshot.
 
 
 C = Constants()
@@ -188,9 +190,21 @@ def R_angle(state: dict, action: list[float], R_goal: float, c: Constants = C) -
 
 
 def R_snapshot(state: dict, action: list[float], R_goal: float, c: Constants = C) -> float:
+    """Eq.(40), with one change (c.snapshot_aa_in_range): the standalone AA term is weighted
+    by phi_range. Bare phi_AA pays up to 1 per step for sitting anywhere in the bandit's
+    rear sector, at any range and any heading. Trained literally (runs/S0_eq40_literal) the
+    agent learned to turn away from a bandit flying straight and dive: AA stayed small as the
+    range opened, so the term paid +0.5..0.9 a step all the way down, while the angle
+    reward for the same flight was negative. The safety gate only bit in the last few
+    seconds of a 280 m/s dive, and crashes rose from 2 to 12 of 20 per epoch. Weighted by
+    phi_range the term is unchanged where a snapshot happens (phi_range = 1 at d_r = 500 m,
+    0.47 at 2 km) and fades as the fight is abandoned (0.03 at 9 km)."""
+    aa_term = phi_AA(state["AA"], c)
+    if c.snapshot_aa_in_range:
+        aa_term *= phi_range(state["Range"], c)
     shaping = (
         c.c0 * phi_ATA(state["ATA"], c) * phi_range(state["Range"], c)
-        + phi_AA(state["AA"], c)
+        + aa_term
         + c.c1 * phi_energy(state["E_self"], state["E_adv"])
         + r_proximity(state["Proximity"])
     )
