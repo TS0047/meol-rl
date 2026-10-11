@@ -4,23 +4,37 @@ SAC intra-option policy for the **angle tactic** (Algorithm 1), trained under th
 automatic curriculum (Algorithm 2) and an opponent ladder that ends at the full Shaw-doctrine
 `BFMAgent`, the paper's rule-based expert (Sec 5). It was warm-started from run A's epoch-20 actor
 ([`../angle_tactic_A`](../angle_tactic_A)) and trained on branch `feat/resume-training` with every
-fix listed below. Training was stopped by hand at **epoch 204, 13.83M sim steps (92% of the paper's 1.5e7)**.
+fix listed below. It trained for the paper's full budget: **15.0M sim steps, epochs 21–229**. It was
+paused by hand at epoch 204 (13.83M) and resumed exactly from its checkpoint on 2026-10-11.
 
 ## Headline result
 
-| Fights against the full BFM (`bfm_angles`) | Fights | Win | Loss | Draw (timeout) | Crash |
+**Training fights against the full BFM (`bfm_angles`):**
+
+| Epochs | Fights | Win | Loss | Draw (timeout) | Crash |
 |---|---|---|---|---|---|
-| All top-rung epochs (93–204) | 2,254 | **56%** | 8% | 35% | 1% |
-| Last 20 epochs (185–204) | 414 | **61%** | 7% | 32% | 0% |
+| All top-rung epochs (93–228) | 2,720 | **58%** | 7% | 34% | 1% |
+| Up to the pause (93–204) | 2,240 | 56% | 8% | 35% | 1% |
+| After the resume (205–228) | 480 | **65%** | 4% | 31% | 0.2% |
+| Last 20 epochs (209–228) | 400 | **64%** | 3% | 32% | 0.25% |
 | Paper's MEOL angle tactic | — | ~60% | — | — | — |
 
-The best policy (`policy_best.pt`) reached a rolling win rate of **0.72** over the last 100 fights at epoch 202.
+The best policy (`policy_best.pt`) reached a rolling win rate of **0.72** over the last 100 fights at
+epoch 202. No later epoch beat it; the resumed segment peaked at 0.71.
 
-> These are **training** fights: stochastic actions (exploration) and curriculum-chosen starts,
-> which the curriculum deliberately makes harder as the agent improves. A deterministic evaluation on a
-> fixed set of random starts is the right number for a report and has **not been run yet**.
-> The kill rule also differs from the paper's: here a side must hold the other inside its WEZ
-> (150–1000 m, ±15°) for 0.5 s.
+**Frozen-weight flights** (deterministic actions, the same 38 starts for each policy; see
+[`../../visualizations`](../../visualizations)):
+
+| Policy | Win | Timeout | Loss | Crash |
+|---|---|---|---|---|
+| `policy_best.pt` (epoch 202) | 23 | 12 | 3 | 0 |
+| `snapshots/actor_epoch0204.pt` | 23 | 12 | 3 | 0 |
+| `policy_final.pt` (15M) | 23 | 15 | **0** | 0 |
+
+> **About these numbers:**
+> - Training fights use stochastic actions and curriculum-chosen starts, which get harder as the agent improves.
+> - The frozen-weight sets are only 38 fights each. A larger deterministic evaluation is still the right number for a report.
+> - The kill rule differs from the paper's: here a side must hold the other inside its WEZ (150–1000 m, ±15°) for 0.5 s.
 
 ## How it learned
 
@@ -31,8 +45,10 @@ The best policy (`policy_best.pt`) reached a rolling win rate of **0.72** over t
 | Finish fights | 50–75 | Wins against the straight target rose to 78% (epoch 75) |
 | Climb the ladder | 75–92 | straight → turn4 (epoch 75) → turn6 (89) → bfm_energy (91) → **bfm_angles (92)**, with each rung taking fewer epochs than the last |
 | Full BFM only | 93–204 | ~25% at first, ~55% plateau with ~40% draws, then peaks to 80% (epochs 123–127). A brief critic wobble at epochs 134–140 (Q-loss doubled) settled on its own |
+| Resumed to 15M | 205–229 | Steady at 60–70% rolling, losses down to 3–4%. Q-loss at its lowest of the run (≈4.3) and α ≈ 0.005. Epoch 229 is a 1,630-step stub that ends exactly at the budget |
 
-`training/training_diagnostics.png` shows all of this.
+`training/training_diagnostics.png` shows all of this. Regenerate it with
+`python plot_training.py models/angle_tactic_W/training --shade-until-epoch 20 --shade-label "run A"`.
 
 ## The fix chain (why earlier runs failed)
 
@@ -72,16 +88,16 @@ did not learn to fly; run A's survival skill, though inverted, gave W a base it 
 | File | Contents |
 |---|---|
 | `policy_best.pt` + `.json` | **best actor**: epoch 202, rolling win rate 0.72 (`sac.GaussianPolicy(21, 4)` state dict) |
-| `policy_final.pt` | actor at epoch 204 |
-| `state_epoch204_noreplay.pt` | resumable training state: actor, critics, targets, optimizers, α, curriculum, counters, RNG; the 275 MB replay buffer is left out, so it refills on resume |
-| `wgan_generator.pt`, `wgan_critic.pt` | curriculum WGAN at epoch 204 |
-| `snapshots/actor_epoch0198.pt`, `actor_epoch0200.pt` | earlier actors (epoch 198: rolling 0.70) |
+| `policy_final.pt` | actor at the end of training (15.0M sim steps, epoch 229) |
+| `state_15M_noreplay.pt` | resumable training state at 15M: actor, critics, targets, optimizers, α, curriculum, counters, RNG. The 275 MB replay buffer is left out, so it refills on resume |
+| `wgan_generator.pt`, `wgan_critic.pt` | curriculum WGAN at the end of training |
+| `snapshots/actor_epochNNNN.pt` | earlier actors: 198 (rolling 0.70), 200, 204 (where training was paused), 205–225 every 5 epochs |
 | `training/angle_tactic_wgan_episodes.csv` | every episode, including run A's epochs 0–20: return, outcome, opponent, start condition |
 | `training/sac_epochs.csv`, `wgan_epochs.csv` | per-epoch SAC stats (Q-loss, α, entropy, outcomes, rung) and curriculum stats |
 | `training/stdout.log` | console log of all of W's segments (it was resumed several times) |
 | `training/training_diagnostics.png` | the figure above |
 | `training/comparison_D_fresh/` | logs of the failed fresh-start run |
-| `flights/*.acmi`, `*_3d.png` | three late wins against the full BFM: open the ACMI files in Tacview (with attitude) |
+| `flights/*.acmi`, `*_3d.png` | three late training wins against the full BFM: open the ACMI files in Tacview (with attitude) |
 
 ## Using it
 
@@ -105,19 +121,31 @@ while not done:
 print(info["outcome"])   # "win" after ~58 s from this start
 ```
 
-Continue training from epoch 205. Critics and curriculum are restored; only the replay buffer starts empty:
+Or fly it over a whole set of starts, saving 3D plots, panels and Tacview files:
 
 ```bash
-python train_angle_wgan.py --run-dir runs/W_continued --resume models/angle_tactic_W/state_epoch204_noreplay.pt --device cuda --total-env-steps 15000000 --plot-every-n-episodes 50 --opponent-curriculum
+python fly_policy.py --policy models/angle_tactic_W/policy_final.pt --out visualizations/my_run --random-starts 30
+```
+
+Continue training past 15M. Critics and curriculum are restored; only the replay buffer starts empty.
+`--total-env-steps` is the new total, so pick it above 15M:
+
+```bash
+python train_angle_wgan.py --run-dir runs/W_continued --resume models/angle_tactic_W/state_15M_noreplay.pt --device cuda --total-env-steps 20000000 --plot-every-n-episodes 50 --opponent-curriculum
 ```
 
 ## Known limitations
 
-1. **No deterministic evaluation yet.** The numbers above are training fights; see the note under the headline.
-2. **About a third of fights end in draws.** Against an expert defender the agent often holds a safe
-   neutral position rather than force a 0.5 s firing solution. Draws pay 0 and losses cost −1000, so
-   nothing pushes hard to convert them. Shortening the kill hold, or adding a small cost per second of
-   an undecided fight, are the obvious next experiments.
+1. **Only small deterministic evaluations so far.** There are 38 frozen-weight fights per policy; see the note under the headline.
+2. **About a third of fights end in draws, and the draws are a reward loophole.** All 15 timeouts of
+   the final policy's 38 frozen flights are the same move, from defensive and beam starts:
+   - the agent turns away and extends in a dive, from 4.5 km to 1–2.5 km, at about 320 m/s against the expert's 290;
+   - the expert sits on its tail, 1.5–4.5 km behind: outside gun range, but well inside the 12 km disengage limit;
+   - it runs about 30 km until the 120 s limit ends the fight.
+
+   A timeout pays 0 and a loss costs −1000, so running away safely is the best-paying answer to a bad start.
+   The next experiments: a timeout reward that depends on who holds the positional advantage at the end,
+   a shorter disengage range, and a small cost per second of an undecided fight.
 3. **Some wins exploit a habit of the opponent.** From a head-on start (3500 m, AA 180°, ATA 0°) the best
    actor wins in ~8 s. `BFMAgent`'s entry offsets its flight path before the merge, so for a moment
    only our nose is on target. That is a legal snapshot in this simulation, but a stronger or less
