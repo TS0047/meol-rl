@@ -301,7 +301,9 @@ def train(total_env_steps=int(1.5e7), n_generator_samples=10, episodes_per_point
                 if plot_every_n_episodes > 0 and episode % plot_every_n_episodes == 0:
                     tag = f"ep{episode:05d}_{info['outcome']}"
                     plot_3d_trajectory(env.trajectory, os.path.join(PLOT_DIR, f"{tag}_3d.png"), title=tag)
-                    write_acmi(env.trajectory, os.path.join(LOG_DIR, f"{tag}.acmi"))
+                    write_acmi(env.trajectory, os.path.join(LOG_DIR, f"{tag}.acmi"),
+                               title=f"episode {episode}, epoch {epoch}: {info['outcome']}",
+                               opponent=info["opponent"])
 
             # ---- line 16: win rate / mean return at x0_j (None if nothing finished) ----
             if point_completions > 0:
