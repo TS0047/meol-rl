@@ -78,6 +78,34 @@ def plot_3d_trajectory(trajectory, out_path, title=""):
     plt.close(fig)
 
 
+OUTCOME_COLORS = {"win": "tab:blue", "loss": "tab:red", "timeout": "dimgray", "crash": "darkorange",
+                  "disengaged": "purple"}
+
+
+def plot_overview(entries, out_path, title=""):
+    """Contact sheet of many engagements: one small 3D plot per (label, trajectory, outcome),
+    titled in the outcome's colour. Every 5th logged point is drawn (10 Hz is plenty here)."""
+    if not entries:
+        return
+    cols = 6 if len(entries) > 20 else 5
+    rows = -(-len(entries) // cols)
+    fig = plt.figure(figsize=(3.1 * cols, 3.0 * rows))
+    for i, (label, trajectory, outcome) in enumerate(entries):
+        s = np.array([r["self_pos"] for r in trajectory[::5]])
+        a = np.array([r["adv_pos"] for r in trajectory[::5]])
+        ax = fig.add_subplot(rows, cols, i + 1, projection="3d")
+        ax.plot(s[:, 0], s[:, 1], s[:, 2], color="tab:blue", lw=1.2)
+        ax.plot(a[:, 0], a[:, 1], a[:, 2], color="tab:red", lw=1.2)
+        ax.scatter(*s[0], color="tab:blue", marker="s", s=12)
+        ax.scatter(*a[0], color="tab:red", marker="s", s=12)
+        ax.set_title(f"{label}\n{outcome.upper()}", fontsize=8, color=OUTCOME_COLORS.get(outcome, "black"))
+        ax.tick_params(labelsize=5, pad=0)
+    fig.suptitle(title, fontsize=12)
+    fig.tight_layout(rect=(0, 0, 1, 0.98))
+    fig.savefig(out_path, dpi=90)
+    plt.close(fig)
+
+
 def plot_win_rate(csv_path, out_path):
     import csv as _csv
     episodes, win_rates = [], []

@@ -25,7 +25,7 @@ from adversary import LADDER
 from env import AngleTacticEnv, OBS_DIMS
 from export import write_acmi
 from sac import GaussianPolicy
-from visualize import plot_3d_trajectory, plot_trajectory
+from visualize import plot_3d_trajectory, plot_overview, plot_trajectory
 
 # Named starts in Table 1 terms (Range m, AA deg, ATA deg). AA: angle between the bandit's
 # nose and the line of sight from us (0 = it points away, 180 = it points at us);
@@ -83,7 +83,7 @@ def main():
         (f"random_{i + 1:02d}", (float(rng.uniform(1900, 5100)), float(rng.uniform(-180, 180)),
                                  float(rng.uniform(-180, 180)))) for i in range(args.random_starts)]
 
-    rows = []
+    rows, sheet = [], []
     for i, (name, ic) in enumerate(starts):
         outcome, secs = fly(pi, env, ic, seed=args.seed + i)
         tag = f"{i + 1:02d}_{name}_{outcome}"
@@ -91,9 +91,10 @@ def main():
                  f"{outcome.upper()} at {secs:.1f} s vs {args.opponent}")
         plot_3d_trajectory(env.trajectory, os.path.join(args.out, f"{tag}_3d.png"), title=title)
         plot_trajectory(env.trajectory, os.path.join(args.out, f"{tag}_panels.png"), title=title)
-        write_acmi(env.trajectory, os.path.join(args.out, f"{tag}.acmi"))
+        write_acmi(env.trajectory, os.path.join(args.out, f"{tag}.acmi"), title=title, opponent=args.opponent)
         rows.append({"n": i + 1, "start": name, "range_m": round(ic[0]), "aa_deg": round(ic[1]),
                      "ata_deg": round(ic[2]), "outcome": outcome, "seconds": round(secs, 1), "files": tag})
+        sheet.append((f"{i + 1:02d} {name} ({secs:.0f} s)", list(env.trajectory), outcome))
         print(f"{i + 1:2d}/{len(starts)} {name:20s} -> {outcome:10s} {secs:6.1f} s", flush=True)
 
     with open(os.path.join(args.out, "summary.csv"), "w", newline="") as f:
@@ -101,6 +102,8 @@ def main():
         w.writeheader()
         w.writerows(rows)
     c = Counter(r["outcome"] for r in rows)
+    plot_overview(sheet, os.path.join(args.out, "overview_3d.png"),
+                  title=f"{args.policy} vs {args.opponent}: " + ", ".join(f"{k} {v}" for k, v in c.most_common()))
     with open(os.path.join(args.out, "summary.md"), "w", encoding="utf-8") as f:
         f.write(f"# Frozen-policy engagements\n\npolicy `{args.policy}`, opponent `{args.opponent}`, "
                 f"deterministic actions, {len(rows)} engagements\n\n")
