@@ -150,5 +150,7 @@ python train_angle_wgan.py --run-dir runs/W_continued --resume models/angle_tact
    actor wins in ~8 s. `BFMAgent`'s entry offsets its flight path before the merge, so for a moment
    only our nose is on target. That is a legal snapshot in this simulation, but a stronger or less
    predictable opponent would not hand it over.
-4. **Angle tactic only.** The snapshot and energy tactics and the paper's option-selection layer (Algorithm 3) are not built yet.
+4. **The other tactics are in sibling folders.** [`../angle_tactic_S`](../angle_tactic_S) (snapshot) and
+   [`../angle_tactic_E`](../angle_tactic_E) (energy) were trained the same way. The option-selection layer
+   (Algorithm 3) is `train_options.py`.
 5. **Single run, single seed.** The training curve swings by ±0.2 over tens of epochs (as the paper's Fig. 4 also shows).
