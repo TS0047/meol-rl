@@ -117,7 +117,7 @@ def plot_win_rate(csv_path, out_path):
     fig, ax = plt.subplots(figsize=(7, 4))
     ax.plot(episodes, win_rates, "b-")
     ax.set_xlabel("episode"); ax.set_ylabel("success rate (rolling 100)")
-    ax.set_title("Angle tactic training: rolling win rate")
+    ax.set_title("Tactic training: rolling win rate")
     ax.set_ylim(0, 1)
     fig.tight_layout()
     fig.savefig(out_path, dpi=120)

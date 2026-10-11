@@ -1,8 +1,13 @@
 """
-Angle-tactic training environment (Gymnasium API).
+Tactic training environment (Gymnasium API).
 Two JSBSim F-16 instances (self + rule-based adversary) in a shared flat-earth
-local NEU frame. Implements Eq.(8) geometry, Section 2.4 WEZ kill logic,
-Eq.(38) angle-tactic reward, and Table 1 parameterized initial conditions.
+local NEU frame. Implements Eq.(8) geometry, Section 2.4 WEZ kill logic, the
+intra-option tactic rewards -- angle Eq.(38), snapshot Eq.(40), energy Eq.(41) --
+and Table 1 parameterized initial conditions.
+
+The three tactics share everything except the shaping term of the reward: same
+starts, kill rule, terminal outcomes and regularisation (paper Sec 4.2). The class
+keeps its original name, AngleTacticEnv; pass tactic="snapshot" or "energy".
 """
 
 import os
@@ -13,7 +18,9 @@ from gymnasium import spaces
 from geometry import body_axes_enu, body_x_enu, combat_geometry, proximity, reset_geometry
 
 from adversary import BFMAdversary, LadderAdversary, TOP as LADDER_TOP
-from reward import R_angle
+from reward import R_angle, R_energy, R_snapshot
+
+TACTIC_REWARDS = {"angle": R_angle, "snapshot": R_snapshot, "energy": R_energy}
 
 DATA_ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 
@@ -203,13 +210,17 @@ class AngleTacticEnv(gym.Env):
 
     def __init__(self, max_steps=6000, log_trajectory=False, adversary_type="bfm",
                  obs_mode="extended", action_repeat=ACTION_REPEAT, terminate_on_kill=True,
-                 opponent_level=None):
+                 opponent_level=None, tactic="angle"):
         """max_steps counts 50 Hz sim steps (6000 = 120 s), whatever action_repeat is.
         obs_mode="paper", action_repeat=1 reproduces the paper's interface exactly;
-        terminate_on_kill=False reproduces run A's never-ending, first-graze outcome rule."""
+        terminate_on_kill=False reproduces run A's never-ending, first-graze outcome rule.
+        tactic selects the reward (TACTIC_REWARDS); it can be changed between episodes."""
         super().__init__()
         if obs_mode not in OBS_DIMS:
             raise ValueError(f"unknown obs_mode {obs_mode!r}, expected one of {list(OBS_DIMS)}")
+        if tactic not in TACTIC_REWARDS:
+            raise ValueError(f"unknown tactic {tactic!r}, expected one of {list(TACTIC_REWARDS)}")
+        self.tactic = tactic
         self.max_steps = max_steps
         self.log_trajectory = log_trajectory
         self.obs_mode = obs_mode
@@ -301,6 +312,7 @@ class AngleTacticEnv(gym.Env):
         self.fdm_self["fcs/elevator-cmd-norm"] = float(action[2])
         self.fdm_self["fcs/throttle-cmd-norm[0]"] = float(np.clip((action[3] + 1) / 2, 0.0, 1.0))
 
+        reward_fn = TACTIC_REWARDS[self.tactic]
         rewards, terminal = [], 0.0
         for _ in range(self.action_repeat):
             s_self_prev = _read_state(self.fdm_self)
@@ -330,7 +342,7 @@ class AngleTacticEnv(gym.Env):
                 "alpha_AoA": s_self["alpha_deg"], "beta": s_self["beta_deg"],
                 "v_up": s_self["v"][2], "V_true": s_self["vt_mps"], "Nz": s_self["nz"],
             }
-            rewards.append(R_angle(state_dict, list(action), bonus))
+            rewards.append(reward_fn(state_dict, list(action), bonus))
             self._log_step(s_self, s_adv, geom, prox)
             if terminated or truncated:
                 break

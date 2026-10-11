@@ -1,5 +1,6 @@
 """
-Angle-tactic training loop implementing Algorithm 2's structure:
+Tactic training loop (--tactic angle | snapshot | energy; the file keeps its original
+name) implementing Algorithm 2's structure:
 
   for each epoch:
       for k critic steps:                                  (Alg.2 lines 5-11)
@@ -29,6 +30,9 @@ Resuming (--resume):
     critics and the curriculum start fresh, so for the first
     --actor-warmup-updates updates only the critics train: an actor following
     the gradients of untrained critics would be wrecked.
+
+The tactic only changes the shaping term of the reward (env.TACTIC_REWARDS). An exact
+resume takes it from the checkpoint; passing a different --tactic is an error.
 """
 
 import os
@@ -136,7 +140,7 @@ def _resume_full(path, agent, buffer, curriculum):
     curriculum.load_state_dict(ck["curriculum"])
     np.random.set_state(ck["rng"]["numpy"])
     torch.set_rng_state(ck["rng"]["torch"])
-    return dict(ck["counters"])
+    return dict(ck["counters"]), dict(ck.get("config", {}))
 
 
 def _warm_start_from_model_dir(model_dir, agent, ep_log_path, epoch_log_path):
@@ -162,7 +166,7 @@ def train(total_env_steps=int(1.5e7), n_generator_samples=10, episodes_per_point
           plot_every_n_episodes=50, ckpt_every_n_epochs=5, obs_mode="extended", action_repeat=5,
           device="cpu", buffer_size=int(1e6), uniform_frac=0.3, terminate_on_kill=True,
           resume=None, actor_warmup_updates=None, reward_scale=0.1,
-          opponent_curriculum=False, opponent_level=0, p_top=0.25):
+          opponent_curriculum=False, opponent_level=0, p_top=0.25, tactic=None):
     """n_generator_samples (Algorithm 2's n), episodes_per_point and
     wgan_critic_batch are NOT given in the paper -- flagged assumptions.
     mini_batch=256 is Table 2 exact. One epoch costs at most
@@ -179,7 +183,9 @@ def train(total_env_steps=int(1.5e7), n_generator_samples=10, episodes_per_point
     paper's BFM expert -- with probability p_top. After each epoch the rung moves up
     if the win rate on it was >= 0.5 and down if < 0.1. Against the full BFM the
     warm-started policy won 0 of 10 even from easy starts, so the win reward and
-    Eq.(9) never had anything to work with."""
+    Eq.(9) never had anything to work with.
+    tactic: "angle" (default for a new run), "snapshot" or "energy"; None on an exact
+    resume means "whatever the checkpoint was trained with"."""
     config = {k: v for k, v in locals().items() if k != "resume"}
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -202,12 +208,19 @@ def train(total_env_steps=int(1.5e7), n_generator_samples=10, episodes_per_point
 
     counters = {"epoch": 0, "episode": 0, "env_steps": 0, "updates": 0, "win_hist": []}
     if resume and os.path.isfile(resume):
-        counters = _resume_full(resume, agent, buffer, curriculum)
+        counters, ck_config = _resume_full(resume, agent, buffer, curriculum)
+        ck_tactic = ck_config.get("tactic") or "angle"     # checkpoints from before --tactic: angle
+        if tactic not in (None, ck_tactic):
+            raise SystemExit(f"{resume} was trained with tactic {ck_tactic!r}, not {tactic!r}; "
+                             f"drop --tactic to keep {ck_tactic!r}, or warm-start a new run instead")
+        tactic = ck_tactic
         for path, header in ((ep_log_path, EP_HEADER), (epoch_log_path, EPOCH_HEADER), (sac_log_path, SAC_HEADER)):
             _keep_epochs_before(path, header, counters["epoch"])
-        warmup = actor_warmup_updates or 0
+        # a warm start's critic-only phase carries over: resuming inside it must not unfreeze the actor
+        warmup = actor_warmup_updates if actor_warmup_updates is not None else int(counters.get("frozen_left", 0))
         print(f"[resume] full checkpoint {resume}: epoch {counters['epoch']}, env_steps {counters['env_steps']}, "
-              f"replay {buffer.size}, alpha {agent.alpha.item():.4f}")
+              f"replay {buffer.size}, alpha {agent.alpha.item():.4f}"
+              + (f", actor frozen for {warmup} more updates" if warmup > 0 else ""))
     elif resume:
         counters = _warm_start_from_model_dir(resume, agent, ep_log_path, epoch_log_path)
         _write_rows(sac_log_path, SAC_HEADER, [])
@@ -221,6 +234,10 @@ def train(total_env_steps=int(1.5e7), n_generator_samples=10, episodes_per_point
         for path, header in ((ep_log_path, EP_HEADER), (epoch_log_path, EPOCH_HEADER), (sac_log_path, SAC_HEADER)):
             _write_rows(path, header, [])
         warmup = actor_warmup_updates or 0
+
+    tactic = tactic or "angle"
+    env.tactic = config["tactic"] = tactic
+    print(f"[tactic] {tactic}: reward = env.TACTIC_REWARDS[{tactic!r}]", flush=True)
 
     episode, epoch, env_steps = counters["episode"], counters["epoch"], counters["env_steps"]
     win_hist = deque(counters["win_hist"], maxlen=100)  # rolling window over individual episodes
@@ -367,7 +384,8 @@ def train(total_env_steps=int(1.5e7), n_generator_samples=10, episodes_per_point
         epoch += 1
         counters = {"epoch": epoch, "episode": episode, "env_steps": env_steps,
                     "updates": counters["updates"] + n_updates, "win_hist": list(win_hist),
-                    "opp_level": opp_level, "best_win_rate": best_wr, "best_epoch": best_ep}
+                    "opp_level": opp_level, "best_win_rate": best_wr, "best_epoch": best_ep,
+                    "frozen_left": frozen_left}
         save_checkpoint(ckpt_path, agent, buffer, curriculum, counters, config)
         if (epoch - 1) % ckpt_every_n_epochs == 0:
             torch.save(agent.pi.state_dict(), os.path.join(CKPT_DIR, "angle_policy_wgan_latest.pt"))
@@ -429,6 +447,9 @@ if __name__ == "__main__":
                    help="checkpoint file (exact resume) or model folder such as models/angle_tactic_A (actor warm start)")
     p.add_argument("--actor-warmup-updates", type=int, default=None,
                    help="critic-only updates before the actor trains (default 20000 for a model-folder warm start, else 0)")
+    p.add_argument("--tactic", choices=["angle", "snapshot", "energy"], default=None,
+                   help="intra-option tactic, i.e. which shaping reward: Eq.(38) angle, (40) snapshot, (41) energy. "
+                        "Default: angle for a new run, the checkpoint's tactic on an exact resume")
     args = p.parse_args()
     if args.run_dir:
         set_run_dir(args.run_dir)
@@ -442,4 +463,5 @@ if __name__ == "__main__":
           buffer_size=args.buffer_size, uniform_frac=args.uniform_frac,
           terminate_on_kill=args.terminate_on_kill, resume=args.resume,
           actor_warmup_updates=args.actor_warmup_updates, reward_scale=args.reward_scale,
-          opponent_curriculum=args.opponent_curriculum, opponent_level=args.opponent_level, p_top=args.p_top)
+          opponent_curriculum=args.opponent_curriculum, opponent_level=args.opponent_level, p_top=args.p_top,
+          tactic=args.tactic)
