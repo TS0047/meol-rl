@@ -1,0 +1,46 @@
+# Frozen-policy engagements
+
+policy `models/angle_tactic_W/policy_best.pt`, opponent `bfm_angles`, deterministic actions, 38 engagements
+
+**Outcomes:** win 23, timeout 12, loss 3
+
+| # | start | Range (m) | AA | ATA | outcome | time (s) | files |
+|---|---|---|---|---|---|---|---|
+| 1 | tail_chase | 3000 | 0 | 0 | win | 58.1 | `01_tail_chase_win_3d.png` |
+| 2 | offensive_angle_off | 3000 | 30 | 20 | win | 16.5 | `02_offensive_angle_off_win_3d.png` |
+| 3 | head_on | 4000 | 180 | 0 | win | 8.7 | `03_head_on_win_3d.png` |
+| 4 | beam_neutral | 3000 | 90 | 90 | timeout | 120.0 | `04_beam_neutral_timeout_3d.png` |
+| 5 | crossing | 3500 | 135 | 45 | win | 26.3 | `05_crossing_win_3d.png` |
+| 6 | lateral_split | 3500 | 90 | -90 | win | 11.4 | `06_lateral_split_win_3d.png` |
+| 7 | defensive | 2500 | 180 | 180 | timeout | 120.0 | `07_defensive_timeout_3d.png` |
+| 8 | defensive_offset | 3000 | 150 | 150 | timeout | 120.0 | `08_defensive_offset_timeout_3d.png` |
+| 9 | random_01 | 2473 | 50 | -12 | loss | 45.9 | `09_random_01_loss_3d.png` |
+| 10 | random_02 | 3086 | -52 | 105 | win | 13.6 | `10_random_02_win_3d.png` |
+| 11 | random_03 | 4796 | -116 | 55 | win | 11.4 | `11_random_03_win_3d.png` |
+| 12 | random_04 | 2855 | 168 | 151 | timeout | 120.0 | `12_random_04_timeout_3d.png` |
+| 13 | random_05 | 3935 | 91 | 5 | loss | 29.4 | `13_random_05_loss_3d.png` |
+| 14 | random_06 | 4543 | -19 | -58 | win | 21.7 | `14_random_06_win_3d.png` |
+| 15 | random_07 | 2789 | -99 | 9 | win | 7.7 | `15_random_07_win_3d.png` |
+| 16 | random_08 | 3279 | 59 | -175 | win | 19.0 | `16_random_08_win_3d.png` |
+| 17 | random_09 | 3333 | -49 | -110 | win | 19.1 | `17_random_09_win_3d.png` |
+| 18 | random_10 | 3804 | -23 | -72 | win | 20.9 | `18_random_10_win_3d.png` |
+| 19 | random_11 | 2570 | 135 | 107 | timeout | 120.0 | `19_random_11_timeout_3d.png` |
+| 20 | random_12 | 3841 | -56 | 161 | timeout | 120.0 | `20_random_12_timeout_3d.png` |
+| 21 | random_13 | 3703 | -24 | 144 | timeout | 120.0 | `21_random_13_timeout_3d.png` |
+| 22 | random_14 | 2922 | 71 | -67 | win | 9.9 | `22_random_14_win_3d.png` |
+| 23 | random_15 | 2737 | 72 | -98 | win | 10.1 | `23_random_15_win_3d.png` |
+| 24 | random_16 | 3478 | 29 | -112 | win | 17.7 | `24_random_16_win_3d.png` |
+| 25 | random_17 | 4240 | 17 | 44 | timeout | 120.0 | `25_random_17_timeout_3d.png` |
+| 26 | random_18 | 3091 | -29 | -2 | win | 15.8 | `26_random_18_win_3d.png` |
+| 27 | random_19 | 3404 | 63 | 28 | loss | 28.1 | `27_random_19_loss_3d.png` |
+| 28 | random_20 | 3232 | -179 | 106 | timeout | 120.0 | `28_random_20_timeout_3d.png` |
+| 29 | random_21 | 3562 | -62 | 0 | win | 12.7 | `29_random_21_win_3d.png` |
+| 30 | random_22 | 2199 | 146 | 176 | timeout | 120.0 | `30_random_22_timeout_3d.png` |
+| 31 | random_23 | 2088 | -51 | 83 | win | 9.2 | `31_random_23_win_3d.png` |
+| 32 | random_24 | 2906 | 24 | -30 | win | 13.2 | `32_random_24_win_3d.png` |
+| 33 | random_25 | 4377 | 165 | 140 | timeout | 120.0 | `33_random_25_timeout_3d.png` |
+| 34 | random_26 | 3887 | -122 | 161 | timeout | 120.0 | `34_random_26_timeout_3d.png` |
+| 35 | random_27 | 1976 | -73 | -79 | win | 18.4 | `35_random_27_win_3d.png` |
+| 36 | random_28 | 4050 | -5 | -147 | win | 33.1 | `36_random_28_win_3d.png` |
+| 37 | random_29 | 1941 | 38 | -3 | win | 10.2 | `37_random_29_win_3d.png` |
+| 38 | random_30 | 3824 | 23 | 141 | win | 36.3 | `38_random_30_win_3d.png` |

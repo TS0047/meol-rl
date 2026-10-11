@@ -6,9 +6,10 @@ with Automatic Curriculum Generation for UCAV Tactical Decision-Making in Autono
 intra-option policy (Algorithm 1) trained under a WGAN-GP automatic curriculum (Algorithm 2) against a
 Shaw-doctrine rule-based expert.
 
-**Result so far** ([`models/angle_tactic_W`](models/angle_tactic_W)): against the full rule-based expert the
-trained policy wins **61%** of fights over its last 20 training epochs (414 fights; paper ≈ 0.6), loses 7%,
-and draws the rest. That's at 13.8M of the paper's 15M sim steps. A deterministic evaluation is still to be run.
+**Result** ([`models/angle_tactic_W`](models/angle_tactic_W), trained for the paper's full 15M sim steps):
+- **Training fights:** against the full rule-based expert, the policy wins **64%** over its last 20 epochs (400 fights; paper ≈ 0.6), loses 3% and draws the rest.
+- **Frozen weights:** flown with deterministic actions from 38 fixed starts, the final policy wins 23, draws 15 and never loses ([`visualizations`](visualizations)).
+- **The draws:** these are a reward loophole, a safe extension away from the expert. The W README explains it.
 
 ## Layout
 
@@ -21,7 +22,10 @@ and draws the rest. That's at 13.8M of the paper's 15M sim steps. A deterministi
 | `adversary.py` | `BFMAgent` adapter and the opponent ladder |
 | `f16_bfm_agent.py`, `dogfight_sim.py` | Shaw-doctrine rule-based BFM pilot and a standalone two-agent dogfight sim |
 | `train_angle_wgan.py` | training loop: curriculum, opponent ladder, checkpoints, exact resume |
+| `fly_policy.py` | fly a trained policy with frozen weights over a set of starts; saves 3D plots, panels, an overview and Tacview files |
+| `export.py`, `visualize.py`, `plot_training.py` | Tacview ACMI writer (plus `--upgrade` for old files), trajectory plots, training-diagnostics figure |
 | `models/` | trained runs with weights, logs and a README each |
+| `visualizations/` | frozen-weight engagements of run W's policies, with a README comparing them |
 
 ## Train
 
