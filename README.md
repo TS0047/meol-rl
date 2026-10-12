@@ -18,6 +18,7 @@ Each tactic was trained for the paper's full 15M sim steps.
 | Angle ([`W`](models/angle_tactic_W)) | 64% / 3% / 32% | 23 / 15 / 0 | ~0.6 |
 | Snapshot ([`S`](models/angle_tactic_S)) | 83% / 15% / 2% | 37 / 1 / 0 (about 24 clean, see below) | 0.4–0.5 |
 | Energy ([`E`](models/angle_tactic_E)) | 89% / 1% / 10% | 30 / 4 / 4 | 0.5–0.6 |
+| **MEOL option layer** ([`meol_options`](models/meol_options)) | 81% / 3% / 16% | **29 / 9 / 0** | ~0.8 |
 
 **Two exploits to keep in mind:**
 - **Angle's draws** are a reward loophole: a safe extension away from the expert, because a timeout costs
@@ -28,7 +29,13 @@ Each tactic was trained for the paper's full 15M sim steps.
 Both are documented in the model READMEs, and [`visualizations`](visualizations) compares all
 frozen-weight flights start by start.
 
-**Option layer (Algorithm 3):** `train_options.py`, training in `runs/O_meol` over the three final tactics.
+**Option layer (Algorithm 3):** [`models/meol_options`](models/meol_options).
+- **What it learned:** it flies energy about 60% of the time, angle 30% and snapshot 10%. It commits to
+  energy from offensive and neutral starts, and switches between angle and energy from defensive starts
+  to reach a safe draw.
+- **Against the single tactics:** it matches the best tactic's wins (energy, 29–30 of 38) and **never loses**,
+  where energy alone loses 4. It does not add wins as the paper reports. The energy tactic is already strong
+  here, and the draw loophole makes a safe draw the selector's best answer to a bad start.
 
 ## Layout
 
@@ -81,3 +88,4 @@ Useful flags for `train_angle_wgan.py`:
 | [`angle_tactic_W`](models/angle_tactic_W) | angle tactic: climbs the full opponent ladder, ~60% wins vs the expert. Its README explains the chain of failures and fixes |
 | [`angle_tactic_S`](models/angle_tactic_S) | snapshot tactic, with a range-weighted AA term (the literal Eq. 40 taught it to dive away and crash) |
 | [`angle_tactic_E`](models/angle_tactic_E) | energy tactic, the paper's Eq. 41 unchanged |
+| [`meol_options`](models/meol_options) | MEOL option-selection layer over the final W, S and E tactics: 81% wins in training, 0 losses in frozen flights |

@@ -18,6 +18,11 @@ That makes the folders directly comparable, start by start, through their `summa
 | [`S_best`](S_best) | snapshot, best (epoch 176) | 32 | 5 | 1 | 16.6 s |
 | [`E_final`](E_final) | energy, final (15M) | 30 | 4 | 4 | 13.2 s |
 | [`E_best`](E_best) | energy, best (epoch 276) | 30 | 0 | 8 | 14.4 s |
+| [`O_meol_final`](O_meol_final) | **MEOL option layer** over the three final tactics, final | 29 | 9 | **0** | 13.2 s |
+| [`O_meol_best`](O_meol_best) | MEOL option layer, best (epoch 323) | 30 | 8 | 0 | 13.3 s |
+
+The `O_meol_*` folders come from `train_options.py --fly`. Each fight has a `_options.png`, the tactic
+in use over time, in place of the panels plot.
 
 **What separates them:**
 - **Angle** never loses, but escapes every defensive start into a draw. See "What the timeouts are" below.
@@ -28,6 +33,9 @@ That makes the folders directly comparable, start by start, through their `summa
 - **Energy** wins every fight it wins in under 30 s and above 1,100 m, with no exploit. It loses some
   defensive starts instead of escaping them.
 - **Shared:** all three win the head-on start in about 8 s, through the BFM's offset entry at the merge.
+- **MEOL option layer** flies energy most of the time and keeps it from offensive and neutral starts. From
+  defensive starts it switches between angle and energy and ends in a draw. It wins every start energy wins
+  except the beam start, and **never loses**. See [`models/meol_options`](../models/meol_options).
 
 ## Angle tactic (run W) in detail
 
