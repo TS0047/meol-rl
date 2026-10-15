@@ -1,0 +1,5 @@
+{
+  "angle": "models/angle_tactic_W/policy_final.pt",
+  "snapshot": "models/angle_tactic_S/policy_final.pt",
+  "energy": "models/angle_tactic_E/policy_final.pt"
+}
