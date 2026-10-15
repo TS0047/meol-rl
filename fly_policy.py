@@ -7,7 +7,8 @@ is learned or changed. Each engagement is flown against one opponent from
 adversary.LADDER (default: the full BFM expert) and saved as
   <name>_3d.png      3D trajectories of both aircraft (visualize.plot_3d_trajectory)
   <name>_panels.png  paper Fig.5/6-style panels: 3D, AA, ATA, HCA, range, proximity, energy
-  <name>.acmi        Tacview file with attitude
+  <name>.acmi        Tacview file with attitude and, unless --no-weapons, the WEZ layer
+                     (gun cones, lock lines, outcome bookmark; see export.py)
 plus summary.csv / summary.md for the whole set.
 
   python fly_policy.py --policy models/angle_tactic_W/policy_best.pt --out visualizations/run_W_best
@@ -71,6 +72,8 @@ def main():
     p.add_argument("--random-starts", type=int, default=12, help="extra seeded random Table 1 starts")
     p.add_argument("--seed", type=int, default=2026)
     p.add_argument("--obs-mode", choices=list(OBS_DIMS), default="extended")
+    p.add_argument("--no-weapons", action="store_true",
+                   help="leave the Tacview WEZ layer out (gun cones, lock lines, outcome bookmark)")
     args = p.parse_args()
 
     os.makedirs(args.out, exist_ok=True)
@@ -91,7 +94,8 @@ def main():
                  f"{outcome.upper()} at {secs:.1f} s vs {args.opponent}")
         plot_3d_trajectory(env.trajectory, os.path.join(args.out, f"{tag}_3d.png"), title=title)
         plot_trajectory(env.trajectory, os.path.join(args.out, f"{tag}_panels.png"), title=title)
-        write_acmi(env.trajectory, os.path.join(args.out, f"{tag}.acmi"), title=title, opponent=args.opponent)
+        write_acmi(env.trajectory, os.path.join(args.out, f"{tag}.acmi"), title=title, opponent=args.opponent,
+                   outcome=outcome, weapons=not args.no_weapons)
         rows.append({"n": i + 1, "start": name, "range_m": round(ic[0]), "aa_deg": round(ic[1]),
                      "ata_deg": round(ic[2]), "outcome": outcome, "seconds": round(secs, 1), "files": tag})
         sheet.append((f"{i + 1:02d} {name} ({secs:.0f} s)", list(env.trajectory), outcome))

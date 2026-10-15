@@ -284,7 +284,8 @@ def train(tactic_paths, run_dir, total_env_steps=int(1.5e7), option_interval=10,
     print("Training complete. Final win_rate(100):", float(np.mean(win_hist)) if win_hist else float("nan"), flush=True)
 
 
-def fly(policy_path, tactic_paths, out, random_starts=30, seed=2026, option_interval=10, obs_mode="extended"):
+def fly(policy_path, tactic_paths, out, random_starts=30, seed=2026, option_interval=10, obs_mode="extended",
+        weapons=True):
     """Frozen hierarchical agent (argmax option, deterministic tactics) over fly_policy's start set;
     saves a 3D plot, an option timeline, a Tacview file per fight, and summary.csv."""
     import csv
@@ -312,7 +313,8 @@ def fly(policy_path, tactic_paths, out, random_starts=30, seed=2026, option_inte
         tag, secs = f"{i + 1:02d}_{name}_{outcome}", steps / 50.0
         title = f"{name}: R={ic[0]:.0f} AA={ic[1]:.0f} ATA={ic[2]:.0f} -> {outcome.upper()} at {secs:.1f} s (MEOL options)"
         plot_3d_trajectory(env.trajectory, os.path.join(out, f"{tag}_3d.png"), title=title)
-        write_acmi(env.trajectory, os.path.join(out, f"{tag}.acmi"), title=title, opponent=LADDER[LADDER_TOP])
+        write_acmi(env.trajectory, os.path.join(out, f"{tag}.acmi"), title=title, opponent=LADDER[LADDER_TOP],
+                   outcome=outcome, weapons=weapons)
         t = np.array([r["t"] for r in env.trajectory[1:]])
         fig, (a1, a2) = plt.subplots(2, 1, figsize=(10, 5), sharex=True)
         a1.step(t[:len(timeline)], timeline[:len(t)], where="post", color="tab:blue")
@@ -349,12 +351,13 @@ if __name__ == "__main__":
     p.add_argument("--fly", default=None, help="option policy (.pt or checkpoint) to fly frozen instead of training")
     p.add_argument("--out", default="visualizations/O_meol")
     p.add_argument("--random-starts", type=int, default=30)
+    p.add_argument("--no-weapons", action="store_true", help="--fly: leave the Tacview weapons layer out")
     a = p.parse_args()
     if a.torch_threads > 0:
         torch.set_num_threads(a.torch_threads)
     paths = {"angle": a.angle, "snapshot": a.snapshot, "energy": a.energy}
     if a.fly:
-        fly(a.fly, paths, a.out, a.random_starts, option_interval=a.option_interval)
+        fly(a.fly, paths, a.out, a.random_starts, option_interval=a.option_interval, weapons=not a.no_weapons)
     else:
         train(paths, a.run_dir, a.total_env_steps, a.option_interval, a.episodes_per_epoch,
               updates_per_decision=a.updates_per_decision, target_entropy=a.target_entropy, seed=a.seed,

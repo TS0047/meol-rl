@@ -72,7 +72,7 @@ is the best-paying answer to a bad start. Two ways to close it:
 | `overview_3d.png` | contact sheet: all 38 trajectories, titled in the outcome's colour |
 | `NN_<start>_<outcome>_3d.png` | 3D trajectories. Blue is the agent, red the expert; squares are starts and triangles are ends |
 | `NN_<start>_<outcome>_panels.png` | paper Fig. 5/6-style panels: 3D, AA, ATA, HCA, range, closure, energy |
-| `NN_<start>_<outcome>.acmi` | the same fight for **Tacview**: two F-16s with attitude, over open ocean at 0°N 0°E |
+| `NN_<start>_<outcome>.acmi` | the same fight for **Tacview**: two F-16s with attitude, over open ocean at 0°N 0°E, with the WEZ layer (below) |
 | `summary.csv`, `summary.md` | start geometry, outcome and duration of every fight |
 
 ## Regenerate
@@ -82,3 +82,38 @@ python fly_policy.py --policy models/angle_tactic_W/policy_final.pt --out visual
 ```
 
 Older `.acmi` files from before the Tacview fix can be converted in place with `python export.py --upgrade <folder>`.
+
+## WEZ layer in Tacview
+
+Every `.acmi` here shows each jet's gun envelope, using the same rule the simulator uses to score kills:
+
+| In Tacview | What it is |
+|---|---|
+| **Wireframe cone** on each jet (blue or red) | the gun's weapon engagement zone: ±15° off the nose, from 150 m to 1,000 m |
+| **Lock line** | drawn while a jet holds a one-sided gun solution: the other jet is inside its cone and not pointing back. A 0.5 s hold is a kill |
+| **Timeline bookmark** | the outcome: WIN / LOSS / CRASH / TIMEOUT / DISENGAGED |
+
+**One-time setup:** the cone is a custom 3D model. Install it with:
+
+```bash
+python export.py --install-mesh
+```
+
+- This copies `tacview/MEOL.WEZ.obj` into `%APPDATA%\Tacview\Data\Meshes`.
+- Restart Tacview afterwards.
+- Without the model, the files still open, just without the cones.
+
+**Turning it off or on:**
+
+```bash
+python export.py --weapons off visualizations
+python export.py --weapons on visualizations
+python fly_policy.py --policy <policy.pt> --out <folder> --no-weapons
+python train_options.py --fly <options.pt> --out <folder> --no-weapons
+```
+
+- The first two rewrite existing files in place. The last two fly new sets without the layer.
+- The aircraft tracks are identical either way.
+- **Re-applying to existing files:** the lock lines are rebuilt from the file's own positions and attitudes.
+  In 4 of 285 kills one frame on the cone's edge (ATA 15.01°) falls outside, because attitudes are stored to 0.1°.
+  Freshly flown files use the simulator's exact geometry.
