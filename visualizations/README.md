@@ -117,3 +117,26 @@ python train_options.py --fly <options.pt> --out <folder> --no-weapons
 - **Re-applying to existing files:** the lock lines are rebuilt from the file's own positions and attitudes.
   In 4 of 285 kills one frame on the cone's edge (ATA 15.01°) falls outside, because attitudes are stored to 0.1°.
   Freshly flown files use the simulator's exact geometry.
+
+## View in FlightGear
+
+[`fg_replay.py`](../fg_replay.py) replays the same `.acmi` files in FlightGear 2024.1 with both F-16s, at real time:
+
+```bash
+python fg_replay.py --launch visualizations/E_best/01_tail_chase_win.acmi
+python fg_replay.py --speed 0.5 --loop visualizations/E_best/07_defensive_loss.acmi
+python fg_replay.py --launch visualizations/O_meol_final
+python fg_replay.py --launch --live models/angle_tactic_E/policy_best.pt --start tail_chase
+```
+
+- `--launch` starts `fgfs` with the FGAddon `f16-block-52`, waits for its scenery (about 25 s) and switches to the
+  chase view. Without it, the script streams to a FlightGear that is already running with the flags in `FGFS_ARGS`.
+- **The agent's jet** is FlightGear's own aircraft, driven over native-fdm. **The opponent** is a multiplayer
+  aircraft called `BANDIT`. In FlightGear, `V` cycles the views; `--view cockpit` puts you behind the agent's HUD.
+- While the script runs, the opponent is drawn as the full F-16 at any range. FlightGear's default draws an
+  aircraft under 400 px on screen as a low-detail glider. Your own setting is restored on exit.
+- A folder replays every fight in turn. `--live` flies a tactic policy from one of `fly_policy.py`'s starts.
+  The fight is identical to this folder's file for that start.
+- After each fight, a telnet self-check reads both jets back from FlightGear and compares them with the last frame.
+- FlightGear is a display only. Its F-16 flight model is not the one trained on, and there is no WEZ layer.
+  The F-16 addon's Nasal scripts log harmless errors under `--fdm=null`.

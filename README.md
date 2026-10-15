@@ -51,6 +51,7 @@ frozen-weight flights start by start.
 | `train_options.py` | option-selection layer (Algorithm 3) over the frozen tactics; `--fly` flies it frozen with option timelines |
 | `fly_policy.py` | fly a trained tactic with frozen weights over a set of starts; saves 3D plots, panels, an overview and Tacview files |
 | `export.py`, `visualize.py`, `plot_training.py` | Tacview ACMI writer with a toggleable WEZ layer (wireframe gun cones from `tacview/MEOL.WEZ.obj`, lock lines, outcome bookmarks; `--install-mesh` once, `--weapons on\|off` rewrites existing files), trajectory plots, training-diagnostics figure |
+| `fg_replay.py` | replays `.acmi` fights in FlightGear 2024.1 at real time, or flies a policy live (`--live`): the agent's jet over native-fdm, the opponent as a multiplayer aircraft; `--speed`, `--loop`, `--launch` starts fgfs. Display only |
 | `models/` | trained runs with weights, logs and a README each |
 | `visualizations/` | frozen-weight engagements of every tactic, with a README comparing them |
 
