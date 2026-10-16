@@ -11,7 +11,8 @@ Positions come from the .acmi files export.py writes and sit at 0N 0E, open ocea
 in Tacview. A 50 Hz wall clock samples the fight and interpolates between its rows, so 0.5x stays
 smooth and 2x skips rows. Each fight starts after the first frame is held for 1 s and ends with the
 last frame held for 2 s. Then a telnet self-check reads both jets back from FlightGear and compares
-them with that last frame.
+them with that last frame. The agent's speeds, which the .acmi does not hold, are estimated from
+its positions (CAS within ~1 kt), and the add-on in flightgear/ hands them to the F-16's HUD and gauges.
 
   python fg_replay.py --launch visualizations/E_best/01_tail_chase_win.acmi       start FlightGear, replay
   python fg_replay.py --speed 0.5 --loop visualizations/E_best/07_defensive_loss.acmi
@@ -26,6 +27,7 @@ opponent is drawn at full detail at any range (LOD_PROP).
 
 import argparse
 import math
+from collections import deque
 import os
 import socket
 import struct
@@ -40,10 +42,12 @@ FGFS = r"C:\Program Files\FlightGear 2024.1\bin\fgfs.exe"
 FG_AIRCRAFT = os.path.join(os.path.expanduser("~"), "FlightGear", "Downloads", "Aircraft",
                            "org.flightgear.fgaddon.stable_2024", "Aircraft")
 HOST, FDM_PORT, MP_PORT, TELNET_PORT = "127.0.0.1", 5550, 5000, 5501
+# flightgear/ is a FlightGear add-on that feeds the F-16's HUD and gauges under --fdm=null
+ADDON = os.path.join(os.path.dirname(os.path.abspath(__file__)), "flightgear").replace("\\", "/")
 FGFS_ARGS = ["--aircraft=f16-block-52", "--fdm=null", f"--native-fdm=socket,in,50,,{FDM_PORT},udp",
              f"--multiplay=in,50,{HOST},{MP_PORT}", f"--multiplay=out,10,{HOST},5002", "--callsign=SAC",
              f"--telnet={TELNET_PORT}", "--lat=0", "--lon=0", "--in-air", "--timeofday=noon",
-             "--disable-terrasync", "--disable-real-weather-fetch", "--disable-ai-traffic"]
+             "--disable-terrasync", "--disable-real-weather-fetch", "--disable-ai-traffic", f"--addon={ADDON}"]
 VIEWS = {"cockpit": 0, "helicopter": 1, "chase": 2, "tower": 3, "flyby": 6}   # /sim/view[n]
 MP_MODEL = "AI/Aircraft/f16/Models/f-16.xml"
 MP_CALLSIGN = "BANDIT"
@@ -60,10 +64,18 @@ SEED, RANDOM_STARTS = 2026, 30   # fly_policy's start set, as flown for visualiz
 
 
 # ---------- native-fdm: FGNetFDM v24, 408 bytes, network byte order ----------
-def net_fdm(lat_deg, lon_deg, alt_m, roll_deg, pitch_deg, yaw_deg):
-    r = math.radians
+# FGNetFDM's floats after agl, phi, theta, psi: what the HUD and gauges read
+# (rad, rad/s, kt, ft/s, ft/s^2); a frame's `kin` dict fills them, missing ones are 0.
+KIN = ("alpha", "beta", "phidot", "thetadot", "psidot", "vcas", "climb_rate", "v_north", "v_east", "v_down",
+       "v_body_u", "v_body_v", "v_body_w", "A_X_pilot", "A_Y_pilot", "A_Z_pilot")
+KIN_ROWS = 10            # replay: velocities over 0.2 s of rows (the .acmi keeps altitude to 0.1 m)
+
+
+def net_fdm(lat_deg, lon_deg, alt_m, roll_deg, pitch_deg, yaw_deg, kin=None):
+    r, kin = math.radians, kin or {}
     head = struct.pack("!II3d", 24, 0, r(lon_deg), r(lat_deg), alt_m)
-    floats = struct.pack("!22f", alt_m, r(roll_deg), r(pitch_deg), r(yaw_deg), *([0.0] * 18))  # agl: sea level
+    floats = struct.pack("!22f", alt_m, r(roll_deg), r(pitch_deg), r(yaw_deg),   # agl: the sea is the ground
+                         *[kin.get(k, 0.0) for k in KIN], 0.0, 0.0)               # stall warning, slip
     engines = struct.pack("!I4I36f", 1, 2, 0, 0, 0, *([0.0] * 36))     # one engine, running
     tanks = struct.pack("!I4f", 1, 3000.0, 0, 0, 0)
     wheels = struct.pack("!I3I9f", 3, 0, 0, 0, *([0.0] * 9))           # gear up
@@ -124,18 +136,20 @@ def mp_packet(t, lat_deg, lon_deg, alt_m, roll_deg, pitch_deg, yaw_deg):
 
 
 class Link:
-    """UDP to FlightGear: the agent's jet over native-fdm, the opponent over multiplayer."""
+    """UDP to FlightGear: one jet over native-fdm (FlightGear's own aircraft, the agent's unless
+    `own` says "adv"), the other over multiplayer."""
 
     def __init__(self):
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.epoch = time.perf_counter()          # MP time must keep rising across fights and loops
 
-    def send(self, frame):
-        lon, lat = _lonlat(frame["self_pos"])
-        self.sock.sendto(net_fdm(lat, lon, frame["self_pos"][2], *frame["self_att"]), (HOST, FDM_PORT))
-        lon, lat = _lonlat(frame["adv_pos"])
-        self.sock.sendto(mp_packet(time.perf_counter() - self.epoch, lat, lon, frame["adv_pos"][2],
-                                   *frame["adv_att"]), (HOST, MP_PORT))
+    def send(self, frame, kin=None, own="self"):
+        mp = "adv" if own == "self" else "self"
+        lon, lat = _lonlat(frame[f"{own}_pos"])
+        self.sock.sendto(net_fdm(lat, lon, frame[f"{own}_pos"][2], *frame[f"{own}_att"], kin=kin), (HOST, FDM_PORT))
+        lon, lat = _lonlat(frame[f"{mp}_pos"])
+        self.sock.sendto(mp_packet(time.perf_counter() - self.epoch, lat, lon, frame[f"{mp}_pos"][2],
+                                   *frame[f"{mp}_att"]), (HOST, MP_PORT))
 
 
 # ---------- pacing ----------
@@ -156,10 +170,25 @@ def lerp(a, b, s):
     return out
 
 
-def hold(link, row, secs):
+def kinematics(a, b, key="self"):
+    """The agent's instrument readings between rows a and b, which hold no speeds: ground velocity
+    (the sim has no wind, so also true airspeed), subsonic CAS from it in the ISA troposphere, Euler rates."""
+    dt = max(b["t"] - a["t"], 1e-9)
+    ve, vn, vu = ((y - x) / dt for x, y in zip(a[f"{key}_pos"], b[f"{key}_pos"]))
+    v = math.sqrt(ve * ve + vn * vn + vu * vu)
+    temp = 288.15 - 0.0065 * b[f"{key}_pos"][2]
+    mach = v / math.sqrt(401.874 * temp)                                     # a = sqrt(1.4 R T)
+    qc = (temp / 288.15) ** 5.25588 * ((1 + 0.2 * mach * mach) ** 3.5 - 1)   # impact pressure / p0
+    vcas = 661.4786 * math.sqrt(5 * ((qc + 1) ** (2 / 7) - 1))               # kt
+    rates = [math.radians(_wrap180(y - x)) / dt for x, y in zip(a[f"{key}_att"], b[f"{key}_att"])]
+    return {"vcas": vcas, "climb_rate": vu / FT, "v_north": vn / FT, "v_east": ve / FT,
+            "v_down": -vu / FT, "v_body_u": v / FT, "phidot": rates[0], "thetadot": rates[1], "psidot": rates[2]}
+
+
+def hold(link, row, secs, kin=None):
     end = time.perf_counter() + secs
     while time.perf_counter() < end:
-        link.send(row)
+        link.send(row, kin)
         time.sleep(DT)
 
 
@@ -170,15 +199,18 @@ def play(rows, link, speed=1.0):
     prev = nxt = next(it)
     hold(link, prev, LEAD_S)
     start = tick = time.perf_counter()
-    t0 = prev["t"]
+    t0, past, kin = prev["t"], deque(maxlen=KIN_ROWS), None
     while nxt is not None:
         s = t0 + (time.perf_counter() - start) * speed
         while nxt is not None and nxt["t"] <= s:
+            past.append(prev)
             prev, nxt = nxt, next(it, None)
-        link.send(prev if nxt is None else lerp(prev, nxt, s))
+        if past:
+            kin = kinematics(past[0], prev)
+        link.send(prev if nxt is None else lerp(prev, nxt, s), kin)
         tick = max(tick + DT, time.perf_counter() - DT)      # fell behind: drop ticks, never burst
         time.sleep(max(0.0, tick - time.perf_counter()))
-    hold(link, prev, HOLD_S)
+    hold(link, prev, HOLD_S, kin)
     return prev
 
 
@@ -211,9 +243,9 @@ class Props:
         self.sock.sendall(f"set {path} {value}\r\n".encode())
 
 
-def launch(fgfs, aircraft_dir):
+def launch(fgfs, aircraft_dir, extra=()):
     """Starts fgfs and waits until its scenery is loaded; returns (process, telnet)."""
-    proc = subprocess.Popen([fgfs, f"--fg-aircraft={aircraft_dir}", *FGFS_ARGS],
+    proc = subprocess.Popen([fgfs, f"--fg-aircraft={aircraft_dir}", *FGFS_ARGS, *extra],
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     print(f"started FlightGear (pid {proc.pid}), waiting for its scenery ...", flush=True)
     try:

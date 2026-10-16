@@ -138,5 +138,11 @@ python fg_replay.py --launch --live models/angle_tactic_E/policy_best.pt --start
 - A folder replays every fight in turn. `--live` flies a tactic policy from one of `fly_policy.py`'s starts.
   The fight is identical to this folder's file for that start.
 - After each fight, a telnet self-check reads both jets back from FlightGear and compares them with the last frame.
+- **Instruments:** the HUD and gauges read the agent's airspeed, Mach, altitude and vertical speed. The `.acmi`
+  has no speeds, so they are estimated from positions, with CAS within about 1 kt. The add-on in
+  [`flightgear/`](../flightgear), which `--launch` loads, passes them to the F-16. A FlightGear started
+  without it shows no speed on the HUD.
 - FlightGear is a display only. Its F-16 flight model is not the one trained on, and there is no WEZ layer.
-  The F-16 addon's Nasal scripts log harmless errors under `--fdm=null`.
+  The F-16 addon's own systems (fuel, electrics, radar) do not run under `--fdm=null`. They log harmless Nasal
+  errors and leave cues such as FUEL on the HUD.
+- To fly against these policies yourself, see `fg_play.py` in the [top-level README](../README.md#fly-against-them).

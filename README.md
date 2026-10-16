@@ -52,8 +52,33 @@ frozen-weight flights start by start.
 | `fly_policy.py` | fly a trained tactic with frozen weights over a set of starts; saves 3D plots, panels, an overview and Tacview files |
 | `export.py`, `visualize.py`, `plot_training.py` | Tacview ACMI writer with a toggleable WEZ layer (wireframe gun cones from `tacview/MEOL.WEZ.obj`, lock lines, outcome bookmarks; `--install-mesh` once, `--weapons on\|off` rewrites existing files), trajectory plots, training-diagnostics figure |
 | `fg_replay.py` | replays `.acmi` fights in FlightGear 2024.1 at real time, or flies a policy live (`--live`): the agent's jet over native-fdm, the opponent as a multiplayer aircraft; `--speed`, `--loop`, `--launch` starts fgfs. Display only |
+| `fg_play.py` | you fly against the BFM expert or a trained tactic in FlightGear: your stick comes in over native-ctrls, both jets are `env.py`'s JSBSim F-16s under the training rules; fights saved as `.acmi` |
+| `flightgear/` | FlightGear add-on that both scripts load: under `--fdm=null` it feeds the F-16's HUD and gauges (speed, Mach, altitude, FLYUP) |
 | `models/` | trained runs with weights, logs and a README each |
 | `visualizations/` | frozen-weight engagements of every tactic, with a README comparing them |
+
+## Fly against them
+
+[`fg_play.py`](fg_play.py) puts you in the cockpit against the BFM expert or any trained tactic, in
+FlightGear 2024.1 with the FGAddon F-16:
+
+```bash
+python fg_play.py --launch
+python fg_play.py --launch --vs models/angle_tactic_E/policy_best.pt --start head_on
+python fg_play.py --vs straight --start tail_chase --speed 0.5
+```
+
+- **Same fight as training:** both jets are `env.py`'s JSBSim `f16.xml` at 50 Hz, under the same kill rule
+  (0.5 s inside the ±15°, 150–1,000 m gun cone), the 200 m floor and the 12 km disengage.
+  FlightGear is only the cockpit, stick and screen.
+- **Seats:** against a bot from the opponent ladder (`straight`, `turn4`, `turn6`, `bfm_energy`,
+  `bfm_angles`) you fly the agent's seat. Against a policy `.pt` you take the adversary seat, and the policy
+  decides every 0.1 s, as it trained.
+- **`--start`:** a Table 1 start seen from your seat, e.g. `tail_chase` puts you 3 km behind the bandit; or `random`.
+- **Controls:** FlightGear's own. Use a joystick plugged in before it starts, the keyboard (numpad or arrows,
+  PgUp/PgDn throttle) or the mouse yoke (right-click). Trim and speed brake work too, and `P` pauses.
+  `--speed 0.5` is slow motion and `--loop` gives a rematch.
+- **Saved fights:** each one goes to `logs/fg_play/` as an `.acmi`, for Tacview or `fg_replay.py`.
 
 ## Train
 

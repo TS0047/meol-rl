@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- FlightGear add-on that fg_replay.py and fg_play.py load at launch (fg_replay.FGFS_ARGS) -->
+<PropertyList>
+  <meta>
+    <file-type type="string">FlightGear add-on metadata</file-type>
+    <format-version type="int">1</format-version>
+  </meta>
+  <addon>
+    <identifier type="string">org.meol.native-fdm-instruments</identifier>
+    <name type="string">MEOL native-fdm instruments</name>
+    <version type="string">1.0.0</version>
+    <short-description type="string">Feeds the F-16's HUD and gauges when FlightGear runs --fdm=null and native-fdm drives the jet.</short-description>
+    <min-FG-version type="string">2020.3.0</min-FG-version>
+    <max-FG-version type="string">none</max-FG-version>
+  </addon>
+</PropertyList>
