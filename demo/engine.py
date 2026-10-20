@@ -7,6 +7,8 @@ Pilots (best checkpoints):
   meol                     MEOL option layer, models/meol_options/options_best.pt, over the
                            three tactics it was trained with (models/meol_options/tactics.json)
   bfm                      the rule-based Shaw-doctrine expert (BFMAgent, angles fight)
+  lag                      the frozen LAG F-16 autopilot published with HHMARL 3D, as HHMARL's
+                           pursuit opponent (demo/lag_baseline.py; weights fetched separately)
 
 Both aircraft are JSBSim F-16s. Each seat sees the fight from its own side: a trained policy in
 the opponent's seat gets the same 21-dim observation it was trained on, computed with the roles
@@ -49,6 +51,9 @@ PILOTS = {
     "energy": {"label": "Energy tactic", "short": "Energy", "path": "models/angle_tactic_E/policy_best.pt"},
     "meol": {"label": "MEOL option layer", "short": "MEOL", "path": "models/meol_options/options_best.pt"},
     "bfm": {"label": "Rule-based BFM expert", "short": "BFM", "path": None},
+    # the one frozen network published with HHMARL 3D (IDSIA-papers/HHMARL_AirCombat): LAG's F-16
+    # autopilot flown by HHMARL's TrackModel pursuit logic; see demo/lag_baseline.py
+    "lag": {"label": "LAG pursuit (HHMARL)", "short": "LAG", "path": "third_party/hhmarl_lag_baseline/baseline_actor.pt"},
 }
 OBS_DIM = OBS_DIMS["extended"]
 DECISION_EVERY = 5                 # sim steps per policy decision (training: action_repeat = 5)
@@ -145,6 +150,9 @@ class BFMPilot:
 def make_pilot(key, stochastic):
     if key == "bfm":
         return BFMPilot()
+    if key == "lag":
+        from lag_baseline import LAGPursuitPilot
+        return LAGPursuitPilot()
     if key == "meol":
         return MEOLPilot(stochastic)
     return TacticPilot(key, stochastic)
@@ -173,6 +181,8 @@ def _setup(own, adv, stochastic, max_steps):
         torch.set_num_threads(1)
         env = AngleTacticEnv(max_steps=max_steps, log_trajectory=True, action_repeat=1, adversary_type="bfm")
         own_p, adv_p = make_pilot(own, stochastic), make_pilot(adv, stochastic)
+        own_p.fdm, own_p.other_fdm = env.fdm_self, env.fdm_adv     # raw JSBSim access (the LAG pilot needs it)
+        adv_p.fdm, adv_p.other_fdm = env.fdm_adv, env.fdm_self
         env.adversary = OpponentSeat(adv_p, env, PILOTS[adv]["label"])
         _CACHE.clear()
         _CACHE[key] = (env, own_p, adv_p)
@@ -388,7 +398,7 @@ def _plot_summary(results, s, path):
 
 def _variation(s):
     parts = []
-    if s["stochastic"] and not s["own"] == s["adversary"] == "bfm":
+    if s["stochastic"] and not {s["own"], s["adversary"]} <= {"bfm", "lag"}:
         parts.append("stochastic actions (each trained policy samples from its learned distribution)")
     if "bfm" in (s["own"], s["adversary"]):
         parts.append("a new random seed for the rule-based expert")
@@ -410,7 +420,9 @@ def _write_report(cfg, results, s, path):
         f"| Start | Range {s['start']['range_m']:.0f} m, AA {s['start']['aa_deg']:.0f}°, ATA {s['start']['ata_deg']:.0f}°; "
         f"both at {START_ALT_M:.0f} m and {START_SPEED_MPS:.0f} m/s, wings level |",
         f"| Variation between iterations | {_variation(s)} |",
-        f"| Weights | best checkpoints (`policy_best.pt`; MEOL: `options_best.pt` over the tactics it was trained with) |",
+        f"| Weights | best checkpoints (`policy_best.pt`; MEOL: `options_best.pt` over the tactics it was trained with)"
+        + ("; LAG pursuit: HHMARL's frozen `baseline_actor.pt`, deterministic" if "lag" in (s["own"], s["adversary"]) else "")
+        + " |",
         f"| Fight limit | {cfg['max_steps'] / 50:.0f} s; a kill is a 0.5 s hold inside the gun cone (150–1000 m, ±15°) |",
         f"| Seeds | {s['seed']} … {s['seed'] + s['iterations'] - 1} |", "",
         "## Result", "",

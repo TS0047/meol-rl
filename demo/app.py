@@ -31,7 +31,14 @@ PILOT_INFO = {
     "energy": ("Converts energy into position: nose-on reward scaled by the energy ratio (Eq. 41).", "30 W / 0 D / 8 L"),
     "meol": ("High level: picks angle, snapshot or energy every second (Algorithm 3).", "30 W / 8 D / 0 L"),
     "bfm": ("Shaw-doctrine rule-based expert, the opponent every policy was trained against.", "—"),
+    "lag": ("HHMARL 3D's frozen network: LAG's F-16 autopilot flying HHMARL's pursuit logic, nose on the bandit "
+            "and matching its altitude and speed.", "20 W / 9 D / 9 L"),
 }
+
+
+def _unavailable():
+    """Pilots whose weights are not on disk (the third-party LAG network is fetched separately)."""
+    return {k for k, p in engine.PILOTS.items() if p["path"] and not os.path.exists(os.path.join(engine.RL, p["path"]))}
 PRESETS = [("Tail chase", 3000, 0, 0), ("Offensive, angle-off", 3000, 30, 20), ("Head-on", 4000, 180, 0),
            ("Beam, neutral", 3000, 90, 90), ("Crossing", 3500, 135, 45), ("Lateral split", 3500, 90, -90),
            ("Defensive", 2500, 180, 180), ("Defensive, offset", 3000, 150, 150)]
@@ -82,7 +89,8 @@ def index():
     form = {"own": q.get("own", "meol"), "adversary": q.get("adversary", "bfm"), "range_m": q.get("range_m", 3000),
             "aa_deg": q.get("aa_deg", 0), "ata_deg": q.get("ata_deg", 0), "iterations": q.get("iterations", 10)}
     return render_template("index.html", pilots=engine.PILOTS, info=PILOT_INFO, presets=PRESETS, form=form,
-                           recent=_recent(), queued=sum(j["status"] in ("queued", "running") for j in JOBS.values()))
+                           recent=_recent(), queued=sum(j["status"] in ("queued", "running") for j in JOBS.values()),
+                           unavailable=_unavailable())
 
 
 @app.post("/run")
@@ -99,6 +107,8 @@ def run():
         abort(400, "bad form values")
     if cfg["own"] not in engine.PILOTS or cfg["adversary"] not in engine.PILOTS:
         abort(400, "unknown pilot")
+    if {cfg["own"], cfg["adversary"]} & _unavailable():
+        abort(400, "that pilot's weights are missing (LAG: python demo/lag_baseline.py --fetch)")
     if not (500 <= cfg["range_m"] <= 10000 and -180 <= cfg["aa_deg"] <= 180 and -180 <= cfg["ata_deg"] <= 180
             and 1 <= cfg["iterations"] <= 500):
         abort(400, "values out of range")
@@ -158,10 +168,32 @@ def open_folder(run):
     return redirect(url_for("result", run=run))
 
 
+def _free_port(start):
+    """First port from `start` that nothing is bound to. The exclusive bind matters on Windows:
+    there a second Flask server can bind a port already in use, and the two then split requests."""
+    import socket
+    for port in range(start, start + 50):
+        s = socket.socket()
+        if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        try:
+            s.bind(("127.0.0.1", port))
+            return port
+        except OSError:
+            continue
+        finally:
+            s.close()
+    raise SystemExit(f"no free port in {start}-{start + 49}")
+
+
 if __name__ == "__main__":
     os.makedirs(RUNS, exist_ok=True)
     threading.Thread(target=_worker, daemon=True).start()
-    port = int(os.environ.get("DEMO_PORT", 5000))
+    wanted = int(sys.argv[sys.argv.index("--port") + 1]) if "--port" in sys.argv else int(os.environ.get("DEMO_PORT", 5000))
+    port = _free_port(wanted)
+    if port != wanted:
+        print(f"port {wanted} is in use (another demo running?), using {port}", flush=True)
+    print(f"MEOL demo on http://127.0.0.1:{port}", flush=True)
     if "--no-browser" not in sys.argv:
         threading.Timer(1.0, lambda: webbrowser.open(f"http://127.0.0.1:{port}")).start()
     app.run(host="127.0.0.1", port=port, debug=False, threaded=True)

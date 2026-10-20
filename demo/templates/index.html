@@ -6,9 +6,10 @@
     <div class="side-title own">Own aircraft (blue)</div>
     <div class="pilots">
     {% for key, p in pilots.items() %}
-      <label class="pilot"><input type="radio" name="own" value="{{ key }}" {{ 'checked' if form.own == key }}>
+      <label class="pilot"><input type="radio" name="own" value="{{ key }}" {{ 'checked' if form.own == key }} {{ 'disabled' if key in unavailable }}>
         <span><b>{{ p.label }}</b><small>{{ info[key][0] }}</small>
-        {% if key != 'bfm' %}<span class="rec"> · vs the expert, 38 fixed starts: {{ info[key][1] }}</span>{% endif %}</span></label>
+        {% if key != 'bfm' %}<span class="rec"> · vs the expert, 38 fixed starts: {{ info[key][1] }}</span>{% endif %}
+        {% if key in unavailable %}<span class="rec" style="color:var(--red)"> · weights missing: <code>python demo/lag_baseline.py --fetch</code></span>{% endif %}</span></label>
     {% endfor %}
     </div>
   </div>
@@ -16,7 +17,7 @@
     <div class="side-title adv">Adversary (red)</div>
     <div class="pilots">
     {% for key, p in pilots.items() %}
-      <label class="pilot"><input type="radio" name="adversary" value="{{ key }}" {{ 'checked' if form.adversary == key }}>
+      <label class="pilot"><input type="radio" name="adversary" value="{{ key }}" {{ 'checked' if form.adversary == key }} {{ 'disabled' if key in unavailable }}>
         <span><b>{{ p.label }}</b><small>{{ info[key][0] }}</small></span></label>
     {% endfor %}
     </div>

@@ -54,7 +54,7 @@ frozen-weight flights start by start.
 | `fg_replay.py` | replays `.acmi` fights in FlightGear 2024.1 at real time, or flies a policy live (`--live`): the agent's jet over native-fdm, the opponent as a multiplayer aircraft; `--speed`, `--loop`, `--launch` starts fgfs. Display only |
 | `fg_play.py` | you fly against the BFM expert or a trained tactic in FlightGear: your stick comes in over native-ctrls, both jets are `env.py`'s JSBSim F-16s under the training rules; fights saved as `.acmi` |
 | `flightgear/` | FlightGear add-on that both scripts load: under `--fdm=null` it feeds the F-16's HUD and gauges (speed, Mach, altitude, FLYUP) |
-| `demo/` | the web demo: any of the five pilots against any other, N iterations, a results page and a report folder (see below) |
+| `demo/` | the web demo: any of the six pilots against any other, N iterations, a results page and a report folder (see below) |
 | `models/` | trained runs with weights, logs and a README each |
 | `visualizations/` | frozen-weight engagements of every tactic, with a README comparing them |
 
@@ -67,9 +67,14 @@ python demo/app.py
 This opens <http://127.0.0.1:5000>, a local page that runs fights on this machine.
 
 **What you choose:**
-- **Own aircraft (blue) and adversary (red):** any of the **five pilots**: the angle, snapshot and energy
-  tactics, the MEOL option layer, or the rule-based BFM expert. They use their best checkpoints, and MEOL
-  runs over the tactics it was trained with.
+- **Own aircraft (blue) and adversary (red):** any of the **six pilots**: the angle, snapshot and energy
+  tactics, the MEOL option layer, the rule-based BFM expert, or **LAG pursuit (HHMARL)**. Ours use their best
+  checkpoints, and MEOL runs over the tactics it was trained with.
+- **About LAG pursuit (HHMARL):** it's the one frozen network published with
+  [HHMARL 3D](https://github.com/IDSIA-papers/HHMARL_AirCombat), LAG's JSBSim F-16 autopilot, flown by HHMARL's
+  pursuit logic.
+  - Fetch it once with `python demo/lag_baseline.py --fetch`. It isn't committed; see `third_party/hhmarl_lag_baseline/`.
+  - Against the expert from the 38 standard starts: 20 W / 9 D / 9 L.
 - **The start:** Range, AA and ATA, or one of 8 presets, with a live top-view preview.
 - **The number of iterations.**
 
