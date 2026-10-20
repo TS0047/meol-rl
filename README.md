@@ -54,8 +54,50 @@ frozen-weight flights start by start.
 | `fg_replay.py` | replays `.acmi` fights in FlightGear 2024.1 at real time, or flies a policy live (`--live`): the agent's jet over native-fdm, the opponent as a multiplayer aircraft; `--speed`, `--loop`, `--launch` starts fgfs. Display only |
 | `fg_play.py` | you fly against the BFM expert or a trained tactic in FlightGear: your stick comes in over native-ctrls, both jets are `env.py`'s JSBSim F-16s under the training rules; fights saved as `.acmi` |
 | `flightgear/` | FlightGear add-on that both scripts load: under `--fdm=null` it feeds the F-16's HUD and gauges (speed, Mach, altitude, FLYUP) |
+| `demo/` | the web demo: any of the five pilots against any other, N iterations, a results page and a report folder (see below) |
 | `models/` | trained runs with weights, logs and a README each |
 | `visualizations/` | frozen-weight engagements of every tactic, with a README comparing them |
+
+## Demo: any pilot against any pilot
+
+```bash
+python demo/app.py
+```
+
+This opens <http://127.0.0.1:5000>, a local page that runs fights on this machine.
+
+**What you choose:**
+- **Own aircraft (blue) and adversary (red):** any of the **five pilots**: the angle, snapshot and energy
+  tactics, the MEOL option layer, or the rule-based BFM expert. They use their best checkpoints, and MEOL
+  runs over the tactics it was trained with.
+- **The start:** Range, AA and ATA, or one of 8 presets, with a live top-view preview.
+- **The number of iterations.**
+
+**How it runs:**
+- **Variation:** every iteration starts from the same geometry. Fights differ through stochastic actions
+  (each policy samples from its learned distribution) and a fresh seed for the expert.
+- **Seats:** a policy in the adversary seat sees the fight from its own side, with the same observation it was trained on.
+- **Speed:** fights run in parallel, about 2 s each.
+
+**The output:** each run writes `demo_runs/<time>_<own>-vs-<adversary>_R.._AA.._ATA.._n../`. It holds:
+- for every iteration, a 3D plot, Fig. 5/6-style flight-log panels, a Tacview file with the WEZ layer, and a
+  tactic timeline when MEOL flies;
+- for the whole run, `report.md` with the win rate (with a 95% interval), time to kill, gun-solution time,
+  offensive and defensive time, energy ratio, MEOL tactic use and a per-iteration table;
+- `summary.png`, `overview_3d.png`, `summary.csv` / `summary.json` and `config.json`.
+
+The page shows all of it and keeps a list of recent runs.
+
+**Walkthrough video:**
+
+```bash
+python demo/video/record_walkthrough.py
+```
+
+This records a captioned 1080p tour of the page into `videos/meol_demo_walkthrough.mp4` (about 6 minutes).
+- **How:** headless Chrome drives the real app while `demo/video/tour.js` moves a cursor and shows captions.
+  Frames are captured over the DevTools protocol and encoded with ffmpeg, so nothing appears on screen.
+- **What it shows:** two seeded runs, MEOL vs the expert and energy vs angle, so a re-record shows the same fights.
 
 ## Fly against them
 

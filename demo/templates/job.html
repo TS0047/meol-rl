@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block title %}Running… · MEOL demo{% endblock %}
+{% block body %}
+<div class="panel">
+  <h2><span style="color:var(--blue)">{{ pilots[cfg.own].label }}</span> vs <span style="color:var(--red)">{{ pilots[cfg.adversary].label }}</span></h2>
+  <p class="hint">Start R {{ cfg.range_m|round|int }} m, AA {{ cfg.aa_deg|round|int }}°, ATA {{ cfg.ata_deg|round|int }}° · {{ cfg.iterations }} iterations</p>
+  <div class="bar"><div id="bar"></div></div>
+  <p id="status" style="margin:12px 0 4px">Waiting…</p>
+  <p id="outcomes"></p>
+  <p class="hint" id="last"></p>
+  <pre id="err" style="display:none;white-space:pre-wrap;color:var(--red);font-size:12px"></pre>
+</div>
+<script>
+async function poll() {
+  const r = await fetch('{{ url_for("job_status", job_id=job_id) }}');
+  const j = await r.json();
+  document.getElementById('bar').style.width = (100 * j.done / j.total) + '%';
+  const st = document.getElementById('status');
+  if (j.status === 'queued') st.textContent = `Queued${j.ahead ? ` (${j.ahead} run(s) ahead)` : ''}…`;
+  else if (j.status === 'running') st.textContent = j.done ? `Flying: ${j.done} of ${j.total} fights done` : 'Loading the pilots and starting the simulators…';
+  else if (j.status === 'done') { st.textContent = 'Done. Building the report…'; location.href = '/runs/' + j.run; return; }
+  else if (j.status === 'error') { st.textContent = 'Failed.'; const e = document.getElementById('err'); e.style.display = 'block'; e.textContent = j.error; return; }
+  document.getElementById('outcomes').innerHTML = Object.entries(j.outcomes).map(([k, v]) => `<span class="pill o-${k}">${k} ${v}</span>`).join(' ');
+  document.getElementById('last').textContent = j.last ? 'Last finished: ' + j.last : '';
+  setTimeout(poll, 800);
+}
+poll();
+</script>
+{% endblock %}

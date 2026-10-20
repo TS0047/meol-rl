@@ -17,3 +17,6 @@ runs/
 # frozen-policy engagements (fly_policy.py) kept with their Tacview files
 !visualizations/**/*.acmi
 visualizations.zip
+
+# demo web app output (python demo/app.py)
+demo_runs/
