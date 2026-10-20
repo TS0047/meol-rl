@@ -37,7 +37,7 @@ M_PER_DEG_LON = 111320.0
 
 SELF_ID, ADV_ID = "101", "102"                      # hex ids, as the spec requires
 STATIC_PROPS = {
-    SELF_ID: "Type=Air+FixedWing,Name=F-16C,Pilot=SAC agent,Coalition=Allies,Color=Blue",
+    SELF_ID: "Type=Air+FixedWing,Name=F-16C,Pilot={agent},Coalition=Allies,Color=Blue",
     ADV_ID: "Type=Air+FixedWing,Name=F-16C,Pilot={opponent},Coalition=Enemies,Color=Red",
 }
 
@@ -102,10 +102,10 @@ def wez_states(trajectory):
 
 
 def write_acmi(trajectory, path, title="MEOL tactic engagement", opponent="adversary", outcome=None,
-               weapons=WEAPONS):
+               weapons=WEAPONS, agent="SAC agent"):
     if not trajectory:
         return
-    static = {oid: props.format(opponent=_text(opponent)) for oid, props in STATIC_PROPS.items()}
+    static = {oid: props.format(opponent=_text(opponent), agent=_text(agent)) for oid, props in STATIC_PROPS.items()}
     if weapons:
         wez = wez_states(trajectory)
     sides = ((SELF_ID, ADV_ID, "self", 0, "Blue"), (ADV_ID, SELF_ID, "adv", 1, "Red"))
@@ -129,9 +129,9 @@ def write_acmi(trajectory, path, title="MEOL tactic engagement", opponent="adver
                     cone = f",Type=Misc+Minor,Name=WEZ,Shape={WEZ_MESH},Parent={oid},Color={color}" if i == 0 else ""
                     f.write(f"{CONE_IDS[oid]},T={tr}{cone}\n")       # the cone rides on its jet
         if weapons and outcome:
-            label = {"win": "WIN: gun kill by the SAC agent",
+            label = {"win": f"WIN: gun kill by {agent}",
                      "loss": f"LOSS: gun kill by {opponent}",
-                     "crash": "CRASH: the SAC agent hit the ground",
+                     "crash": f"CRASH: {agent} hit the ground",
                      "adversary_crash": f"{opponent} hit the ground",
                      "timeout": f"TIMEOUT: draw after {trajectory[-1]['t']:.0f} s",
                      "disengaged": "DISENGAGED: range over 12 km"}.get(outcome, outcome)
@@ -227,8 +227,8 @@ def read_acmi(path):
                         v = [float(x) for x in prop[2:].split("|")]
                         row[f"{key}_pos"] = ((v[0] - REF_LON) * M_PER_DEG_LON, (v[1] - REF_LAT) * M_PER_DEG_LAT, v[2])
                         row[f"{key}_att"] = tuple(v[3:6]) if len(v) >= 6 else None
-                    elif prop.startswith("Pilot=") and oid == ADV_ID:
-                        meta["opponent"] = _untext(prop[len("Pilot="):])
+                    elif prop.startswith("Pilot="):
+                        meta["opponent" if oid == ADV_ID else "agent"] = _untext(prop[len("Pilot="):])
     return [r for r in rows if "self_pos" in r and "adv_pos" in r], meta
 
 
@@ -268,7 +268,8 @@ def main():
             continue
         rows, meta = read_acmi(path)
         write_acmi(rows, path, title=meta.get("title", os.path.splitext(os.path.basename(path))[0]),
-                   opponent=meta.get("opponent", "adversary"), outcome=outcome_from_name(path),
+                   opponent=meta.get("opponent", "adversary"), agent=meta.get("agent", "SAC agent"),
+                   outcome=outcome_from_name(path),
                    weapons=(args.weapons == "on") if args.weapons else WEAPONS)
         done += 1
     print(f"rewrote {done} of {len(files)} ACMI files" + (f" with weapons {args.weapons}" if args.weapons else ""))
