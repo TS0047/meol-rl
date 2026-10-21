@@ -45,7 +45,7 @@ import torch.nn.functional as F
 
 from adversary import LADDER, TOP as LADDER_TOP
 from env import AngleTacticEnv, OBS_DIMS
-from export import write_acmi
+from export import tag_tactics, write_acmi
 from fly_policy import NAMED_STARTS, load_frozen_policy
 from sac import mlp, resolve_device
 from train_angle_wgan import _append_row, _write_rows
@@ -313,8 +313,9 @@ def fly(policy_path, tactic_paths, out, random_starts=30, seed=2026, option_inte
         tag, secs = f"{i + 1:02d}_{name}_{outcome}", steps / 50.0
         title = f"{name}: R={ic[0]:.0f} AA={ic[1]:.0f} ATA={ic[2]:.0f} -> {outcome.upper()} at {secs:.1f} s (MEOL options)"
         plot_3d_trajectory(env.trajectory, os.path.join(out, f"{tag}_3d.png"), title=title)
+        tag_tactics(env.trajectory, "self", timeline, OPTIONS)
         write_acmi(env.trajectory, os.path.join(out, f"{tag}.acmi"), title=title, opponent=LADDER[LADDER_TOP],
-                   outcome=outcome, weapons=weapons)
+                   outcome=outcome, weapons=weapons, agent="MEOL option layer")
         t = np.array([r["t"] for r in env.trajectory[1:]])
         fig, (a1, a2) = plt.subplots(2, 1, figsize=(10, 5), sharex=True)
         a1.step(t[:len(timeline)], timeline[:len(t)], where="post", color="tab:blue")

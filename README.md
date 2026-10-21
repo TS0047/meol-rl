@@ -75,16 +75,21 @@ This opens <http://127.0.0.1:5000>, a local page that runs fights on this machin
   pursuit logic.
   - Fetch it once with `python demo/lag_baseline.py --fetch`. It isn't committed; see `third_party/hhmarl_lag_baseline/`.
   - Against the expert from the 38 standard starts: 20 W / 9 D / 9 L.
-- **The start:** Range, AA and ATA, or one of 8 presets, with a live top-view preview.
-- **The number of iterations.**
+- **The start:** Range, AA and ATA, or one of 8 presets, with a live top-view preview. Or **random per
+  iteration**: each fight draws its own start from Table 1 (R 1900–5100 m, AA and ATA ±180°), and the preview
+  lists the starts the seed will fly.
+- **The number of iterations and the seed.** Iteration *i* uses seed + *i* for everything: the start, the
+  policies' sampling and the expert. So "Run again" with the same seed repeats a run exactly. Random starts
+  depend on the seed alone, so two matchups with the same seed fight from the same starts.
 
 **How it runs:**
-- **Variation:** every iteration starts from the same geometry. Fights differ through stochastic actions
-  (each policy samples from its learned distribution) and a fresh seed for the expert.
+- **Variation:** with a fixed start, every iteration starts from the same geometry. Fights differ through
+  stochastic actions (each policy samples from its learned distribution) and a fresh seed for the expert.
 - **Seats:** a policy in the adversary seat sees the fight from its own side, with the same observation it was trained on.
 - **Speed:** fights run in parallel, about 2 s each.
 
-**The output:** each run writes `demo_runs/<time>_<own>-vs-<adversary>_R.._AA.._ATA.._n../`. It holds:
+**The output:** each run writes `demo_runs/<time>_<own>-vs-<adversary>_R.._AA.._ATA.._n../`
+(random starts: `..._random-starts_seed<seed>_n../`). It holds:
 - for every iteration, a 3D plot, Fig. 5/6-style flight-log panels, a Tacview file with the WEZ layer, and a
   tactic timeline when MEOL flies;
 - for the whole run, `report.md` with the win rate (with a 95% interval), time to kill, gun-solution time,

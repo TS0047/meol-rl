@@ -3,7 +3,7 @@
 {% block body %}
 <div class="panel">
   <h2><span style="color:var(--blue)">{{ pilots[cfg.own].label }}</span> vs <span style="color:var(--red)">{{ pilots[cfg.adversary].label }}</span></h2>
-  <p class="hint">Start R {{ cfg.range_m|round|int }} m, AA {{ cfg.aa_deg|round|int }}°, ATA {{ cfg.ata_deg|round|int }}° · {{ cfg.iterations }} iterations</p>
+  <p class="hint">{% if cfg.random_start %}Random start per iteration (Table 1){% else %}Start R {{ cfg.range_m|round|int }} m, AA {{ cfg.aa_deg|round|int }}°, ATA {{ cfg.ata_deg|round|int }}°{% endif %} · {{ cfg.iterations }} iterations · seed {{ cfg.seed }}</p>
   <div class="bar"><div id="bar"></div></div>
   <p id="status" style="margin:12px 0 4px">Waiting…</p>
   <p id="outcomes"></p>

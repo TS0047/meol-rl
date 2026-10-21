@@ -22,7 +22,9 @@ That makes the folders directly comparable, start by start, through their `summa
 | [`O_meol_best`](O_meol_best) | MEOL option layer, best (epoch 323) | 30 | 8 | 0 | 13.3 s |
 
 The `O_meol_*` folders come from `train_options.py --fly`. Each fight has a `_options.png`, the tactic
-in use over time, in place of the panels plot.
+in use over time, in place of the panels plot. In Tacview:
+- **Jet label:** the blue jet's label names the tactic flying it ("MEOL energy"). The telemetry window shows it too.
+- **Event log:** every switch is listed ("energy -> angle"). Double-click one to centre the camera on the jet.
 
 **What separates them:**
 - **Angle** never loses, but escapes every defensive start into a draw. See "What the timeouts are" below.

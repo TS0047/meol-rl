@@ -11,10 +11,19 @@ WEZ layer (weapons=True, the default; WEAPONS below):
                %APPDATA%\\Tacview\\Data\\Meshes; `python export.py --install-mesh` puts it there)
   * lock line  while a jet holds a one-sided gun solution -- env._check_outcome's rule -- it
                locks the other (LockedTarget), and Tacview draws the line
-  * outcome    a timeline bookmark: WIN / LOSS / CRASH / TIMEOUT / DISENGAGED
+  * merges     a timeline bookmark at every head-on pass, when both jets sit in each other's cone
+               in gun range at once: the rule scores only one-sided holds, so a merge is never a kill
+  * outcome    a timeline bookmark: WIN / LOSS / CRASH / TIMEOUT / DISENGAGED, with the fight's
+               total mutual (non-scoring) cone time when there was any
 No shooting or explosion effects.
 
-  python export.py --install-mesh                         put the cone mesh where Tacview finds it
+MEOL tactics (written whenever rows carry self_tactic / adv_tactic -- see tag_tactics):
+  * label      the jet's call sign reads "MEOL <tactic>" and its Label "MEOL tactic: <tactic>", updated
+               at every switch, so the 3D view and telemetry window always show the tactic flying it
+  * switches   an event per switch in Tacview's event log ("angle -> energy"), linked to the jet;
+               double-clicking one centres the camera on it
+
+  python export.py --install-mesh                        put the cone mesh where Tacview finds it
   python export.py --weapons on visualizations models     add the layer to existing files in place
   python export.py --weapons off visualizations           strip it again
   python export.py --upgrade logs runs                    convert files from the pre-fix writer
@@ -47,6 +56,7 @@ WEZ_MESH_SRC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tacview
 CONE_IDS = {SELF_ID: "111", ADV_ID: "112"}
 CONE_EVERY_FRAMES = 5          # cone pose every 5th 50 Hz frame (10 Hz); Tacview interpolates between
 OUTCOME_RE = re.compile(r"_(adversary_crash|win|loss|timeout|crash|disengaged)(?:_vs_bfm)?\.acmi$")
+TACTIC_LABEL = "MEOL tactic: "  # Label prefix; read_acmi recovers the tactic timeline from it
 
 
 def _text(value):
@@ -79,9 +89,11 @@ def _nose(att):
     return np.array([math.sin(yaw) * math.cos(pitch), math.cos(yaw) * math.cos(pitch), math.sin(pitch)])
 
 
-def wez_states(trajectory):
-    """Per row: (agent holds a one-sided gun solution, opponent holds one), by env._check_outcome's
-    rule. Uses the env's logged Range/ATA/AA, or recomputes them from positions and attitudes."""
+def gun_states(trajectory):
+    """Per row: (agent holds a one-sided gun solution, opponent holds one, mutual), by
+    env._check_outcome's rule. Mutual = both inside each other's cone in gun range at once, a
+    head-on pass: it never builds a kill for either side. Uses the env's logged Range/ATA/AA, or
+    recomputes them from positions and attitudes."""
     out = []
     for row in trajectory:
         if "Range" in row:
@@ -93,12 +105,42 @@ def wez_states(trajectory):
             ata = math.degrees(math.acos(float(np.clip(_nose(row["self_att"]) @ u, -1, 1))))
             aa = math.degrees(math.acos(float(np.clip(_nose(row["adv_att"]) @ u, -1, 1))))
         else:
-            out.append((False, False))
+            out.append((False, False, False))
             continue
         band = SHOOT_MIN_RANGE_M <= rng <= SHOOT_RANGE_M
         s, a = band and ata <= SHOOT_ATA_DEG, band and aa >= BEHIT_AA_DEG
-        out.append((s and not a, a and not s))
+        out.append((s and not a, a and not s, s and a))
     return out
+
+
+def wez_states(trajectory):
+    """Per row: (agent holds a one-sided gun solution, opponent holds one) -- see gun_states."""
+    return [(s, a) for s, a, _ in gun_states(trajectory)]
+
+
+def mutual_passes(trajectory, states=None, gap_s=0.5):
+    """Head-on passes: [(start time, seconds mutual)] for each stretch of mutual frames, joining
+    stretches less than gap_s apart (the cones flicker as the noses cross)."""
+    states = gun_states(trajectory) if states is None else states
+    passes, last_t = [], None
+    for row, (_, _, m) in zip(trajectory, states):
+        if not m:
+            continue
+        if last_t is None or row["t"] - last_t > gap_s:
+            passes.append([row["t"], 0])
+        passes[-1][1] += 1                       # mutual frames in this pass
+        last_t = row["t"]
+    return [(t0, round(k / 50.0, 2)) for t0, k in passes]
+
+
+def tag_tactics(trajectory, key, timeline, names):
+    """Mark each row with the MEOL tactic flying the `key` ("self" / "adv") jet, as row[key + "_tactic"].
+    timeline[k] is the option index in use on sim step k, which ends at row k + 1; row 0 (the start)
+    takes the first choice."""
+    if not len(timeline):
+        return
+    for i, row in enumerate(trajectory):
+        row[f"{key}_tactic"] = names[int(timeline[min(max(i - 1, 0), len(timeline) - 1)])]
 
 
 def write_acmi(trajectory, path, title="MEOL tactic engagement", opponent="adversary", outcome=None,
@@ -107,9 +149,15 @@ def write_acmi(trajectory, path, title="MEOL tactic engagement", opponent="adver
         return
     static = {oid: props.format(opponent=_text(opponent), agent=_text(agent)) for oid, props in STATIC_PROPS.items()}
     if weapons:
-        wez = wez_states(trajectory)
+        gun = gun_states(trajectory)
+        wez = [(s, a) for s, a, _ in gun]
+        passes = mutual_passes(trajectory, gun)
+        merge_at = {round(t0, 2): d for t0, d in passes}           # bookmark each head-on pass where it starts
+        mutual_total = sum(d for _, d in passes)
     sides = ((SELF_ID, ADV_ID, "self", 0, "Blue"), (ADV_ID, SELF_ID, "adv", 1, "Red"))
+    pilots = {"self": agent, "adv": opponent}
     locked = {SELF_ID: False, ADV_ID: False}
+    flying = {"self": None, "adv": None}                            # MEOL tactic last written per jet
     last = len(trajectory) - 1
     # utf-8-sig: the BOM Tacview recommends; newline="\n": no CRLF on Windows
     with open(path, "w", encoding="utf-8-sig", newline="\n") as f:
@@ -124,10 +172,22 @@ def write_acmi(trajectory, path, title="MEOL tactic engagement", opponent="adver
                 if weapons and wez[i][k] != locked[oid]:
                     locked[oid] = wez[i][k]
                     extra += f",LockedTargetMode=1,LockedTarget={other}" if locked[oid] else ",LockedTargetMode=0"
+                tactic, prev = row.get(f"{key}_tactic"), flying[key]
+                if tactic is not None and tactic != prev:
+                    flying[key] = tactic
+                    extra += f",CallSign={_text('MEOL ' + tactic)},Label={_text(TACTIC_LABEL + tactic)}"
                 f.write(f"{oid},T={tr}{extra}\n")
+                if tactic is not None and tactic != prev:
+                    note = (f"{pilots[key]} opens with the {tactic} tactic" if prev is None
+                            else f"{pilots[key]} switches tactic: {prev} -> {tactic}")
+                    f.write(f"0,Event=Message|{oid}|{_text(note)}\n")
                 if weapons and row.get(f"{key}_att") is not None and (i % CONE_EVERY_FRAMES == 0 or i == last):
                     cone = f",Type=Misc+Minor,Name=WEZ,Shape={WEZ_MESH},Parent={oid},Color={color}" if i == 0 else ""
                     f.write(f"{CONE_IDS[oid]},T={tr}{cone}\n")       # the cone rides on its jet
+            if weapons and round(row["t"], 2) in merge_at:
+                f.write("0,Event=Bookmark|" + _text(
+                    f"MERGE: both in each other's gun cone for {merge_at[round(row['t'], 2)]:.1f} s, "
+                    "no kill (only a one-sided 0.5 s hold scores)") + "\n")
         if weapons and outcome:
             label = {"win": f"WIN: gun kill by {agent}",
                      "loss": f"LOSS: gun kill by {opponent}",
@@ -135,6 +195,9 @@ def write_acmi(trajectory, path, title="MEOL tactic engagement", opponent="adver
                      "adversary_crash": f"{opponent} hit the ground",
                      "timeout": f"TIMEOUT: draw after {trajectory[-1]['t']:.0f} s",
                      "disengaged": "DISENGAGED: range over 12 km"}.get(outcome, outcome)
+            if mutual_total > 0:
+                label += (f" ({mutual_total:.1f} s of mutual head-on gun solutions in {len(passes)} "
+                          f"pass{'es' if len(passes) > 1 else ''}, which do not score)")
             f.write(f"0,Event=Bookmark|{_text(label)}\n")
 
 
@@ -207,10 +270,11 @@ def read_legacy_acmi(path):
 
 def read_acmi(path):
     """(rows, meta) from any file this module wrote, old or new format; meta holds title and opponent.
-    Weapon objects and events are skipped, so a rewritten file never duplicates them."""
+    Weapon objects and events are skipped, so a rewritten file never duplicates them; MEOL tactics
+    come back as row["self_tactic"] / row["adv_tactic"] from the jets' Label."""
     if is_legacy(path):
         return read_legacy_acmi(path), {}
-    rows, row, meta = [], None, {}
+    rows, row, meta, tactic = [], None, {}, {"self": None, "adv": None}
     with open(path, encoding="utf-8-sig") as f:
         for line in f:
             line = line.rstrip("\n")
@@ -229,6 +293,10 @@ def read_acmi(path):
                         row[f"{key}_att"] = tuple(v[3:6]) if len(v) >= 6 else None
                     elif prop.startswith("Pilot="):
                         meta["opponent" if oid == ADV_ID else "agent"] = _untext(prop[len("Pilot="):])
+                    elif prop.startswith("Label=" + TACTIC_LABEL):
+                        tactic[key] = _untext(prop[len("Label=" + TACTIC_LABEL):])
+                if tactic[key] is not None:
+                    row[f"{key}_tactic"] = tactic[key]
     return [r for r in rows if "self_pos" in r and "adv_pos" in r], meta
 
 

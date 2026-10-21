@@ -15,6 +15,11 @@ the opponent's seat gets the same 21-dim observation it was trained on, computed
 swapped. Policies decide every 5 sim steps (10 Hz, as trained), MEOL picks a tactic every
 second, the BFM acts at 50 Hz. Iterations start from the same (Range, AA, ATA) and differ through
 stochastic actions -- each policy samples from its learned distribution -- and a fresh BFM seed.
+
+With random_start, every iteration instead draws its own start from the paper's Table 1 domain
+(random_start below). Iteration i uses seed + i for everything: the start, the policies' sampling
+and the BFM. The start depends on that seed alone, so the same seed gives the same starts
+whichever pilots fly, which pairs the fights between matchups.
 """
 
 import csv
@@ -38,8 +43,8 @@ import numpy as np  # noqa: E402
 import torch  # noqa: E402
 
 from adversary import BFMAdversary  # noqa: E402
-from env import OBS_DIMS, AngleTacticEnv, _read_state  # noqa: E402
-from export import write_acmi, wez_states  # noqa: E402
+from env import AA_BOUNDS, ATA_BOUNDS, OBS_DIMS, RANGE_BOUNDS, AngleTacticEnv, _read_state  # noqa: E402
+from export import gun_states, mutual_passes, tag_tactics, write_acmi  # noqa: E402
 from geometry import combat_geometry, proximity  # noqa: E402
 from sac import GaussianPolicy  # noqa: E402
 from train_options import NONE, OPTIONS, OptionAgent  # noqa: E402
@@ -65,6 +70,23 @@ OUTCOME_COLORS = {"win": "#2a78d6", "loss": "#eb6834", "timeout": "#7f7f7f", "cr
 
 def _rl(path):
     return os.path.join(RL, path)
+
+
+def random_start(seed):
+    """(Range m, AA deg, ATA deg) drawn uniformly from Table 1, the domain every policy trained on.
+    A generator of its own, seeded by the iteration's seed alone, so the pilots never change it."""
+    rng = np.random.default_rng(seed)
+    return (round(float(rng.uniform(*RANGE_BOUNDS))), round(float(rng.uniform(*AA_BOUNDS)), 1),
+            round(float(rng.uniform(*ATA_BOUNDS)), 1))
+
+
+def start_text(s):
+    """The start of a run, for titles and the report."""
+    st = s["start"]
+    if s.get("random_start"):
+        return (f"random starts (Table 1: R {RANGE_BOUNDS[0]:.0f}–{RANGE_BOUNDS[1]:.0f} m, "
+                f"AA and ATA {AA_BOUNDS[0]:.0f}…{AA_BOUNDS[1]:.0f}°)")
+    return f"R {st['range_m']:.0f} m, AA {st['aa_deg']:.0f}°, ATA {st['ata_deg']:.0f}°"
 
 
 def _load_actor(path):
@@ -197,7 +219,7 @@ def run_iteration(cfg, i):
     np.random.seed(seed)
     own.reset(seed)
     adv.reset(seed + 100_000)
-    ic = (cfg["range_m"], cfg["aa_deg"], cfg["ata_deg"])
+    ic = random_start(seed) if cfg.get("random_start") else (cfg["range_m"], cfg["aa_deg"], cfg["ata_deg"])
     env.reset(seed=seed, options={"init_condition": ic})
     t0 = time.time()
     while True:
@@ -217,6 +239,9 @@ def run_iteration(cfg, i):
     out = cfg["out_dir"]
     plot_3d_trajectory(traj, os.path.join(out, f"{tag}_3d.png"), title=title)
     plot_trajectory(traj, os.path.join(out, f"{tag}_panels.png"), title=title)
+    for key, pilot in (("self", own), ("adv", adv)):
+        if isinstance(pilot, MEOLPilot):
+            tag_tactics(traj, key, pilot.timeline, OPTIONS)        # tactic on the jet's label + switch events
     write_acmi(traj, os.path.join(out, f"{tag}.acmi"), title=title, opponent=adv_l, agent=own_l,
                outcome=outcome, weapons=cfg["weapons"])
 
@@ -229,14 +254,17 @@ def run_iteration(cfg, i):
     if meol:
         _plot_options(traj, meol, os.path.join(out, f"{tag}_options.png"), title)
 
-    wez = wez_states(traj)
+    wez = gun_states(traj)
+    passes = mutual_passes(traj, wez)
     rng = np.array([r["Range"] for r in traj])
     aa, ata = np.array([r["AA"] for r in traj]), np.array([r["ATA"] for r in traj])
     e_ratio = np.array([r["E_self"] / max(r["E_adv"], 1e-6) for r in traj])
     return {
         "n": i + 1, "seed": seed, "outcome": outcome, "seconds": round(secs, 2), "files": tag,
+        "start_range_m": ic[0], "start_aa_deg": ic[1], "start_ata_deg": ic[2],
         "min_range_m": round(float(rng.min()), 1), "final_range_m": round(float(rng[-1]), 1),
         "own_gun_s": round(sum(w[0] for w in wez) / 50.0, 2), "adv_gun_s": round(sum(w[1] for w in wez) / 50.0, 2),
+        "mutual_gun_s": round(sum(w[2] for w in wez) / 50.0, 2), "head_on_passes": len(passes),
         "offensive": round(float(np.mean((aa <= 60) & (ata <= 60))), 3),
         "defensive": round(float(np.mean((aa >= 120) & (ata >= 120))), 3),
         "energy_ratio": round(float(np.mean(e_ratio)), 3),
@@ -275,16 +303,18 @@ def wilson(k, n, z=1.96):
 
 
 def run_demo(cfg, progress=None):
-    """cfg: own, adversary, range_m, aa_deg, ata_deg, iterations, seed, stochastic, weapons,
-    max_steps, out_root. progress(done, total, result) is called after every fight."""
+    """cfg: own, adversary, range_m, aa_deg, ata_deg (or random_start), iterations, seed, stochastic,
+    weapons, max_steps, out_root. progress(done, total, result) is called after every fight."""
     cfg = dict(cfg)
     cfg.setdefault("stochastic", True)
     cfg.setdefault("weapons", True)
+    cfg.setdefault("random_start", False)
     cfg.setdefault("max_steps", 6000)
     cfg.setdefault("seed", int(time.time()) % 100_000)
     stamp = time.strftime("%Y%m%d-%H%M%S")
-    name = (f"{stamp}_{cfg['own']}-vs-{cfg['adversary']}_R{cfg['range_m']:.0f}_AA{cfg['aa_deg']:.0f}"
-            f"_ATA{cfg['ata_deg']:.0f}_n{cfg['iterations']}")
+    start = (f"random-starts_seed{cfg['seed']}" if cfg["random_start"] else
+             f"R{cfg['range_m']:.0f}_AA{cfg['aa_deg']:.0f}_ATA{cfg['ata_deg']:.0f}")
+    name = f"{stamp}_{cfg['own']}-vs-{cfg['adversary']}_{start}_n{cfg['iterations']}"
     cfg["out_dir"] = os.path.join(cfg.get("out_root", os.path.join(RL, "demo_runs")), name)
     os.makedirs(cfg["out_dir"], exist_ok=True)
     cfg["run_name"] = name
@@ -323,6 +353,7 @@ def summarize(cfg, results, wall):
         "own_label": PILOTS[cfg["own"]]["label"], "adv_label": PILOTS[cfg["adversary"]]["label"],
         "start": {"range_m": cfg["range_m"], "aa_deg": cfg["aa_deg"], "ata_deg": cfg["ata_deg"],
                   "alt_m": START_ALT_M, "speed_mps": START_SPEED_MPS},
+        "random_start": cfg["random_start"],      # True: start above is unused, each iteration has its own
         "iterations": n, "seed": cfg["seed"], "stochastic": cfg["stochastic"], "wall_s": round(wall, 1),
         "outcomes": dict(c), "win_rate": round(c["win"] / n, 3), "win_ci95": [round(lo, 3), round(hi, 3)],
         "loss_rate": round((c["loss"] + c["crash"] + c["disengaged"]) / n, 3),
@@ -331,6 +362,9 @@ def summarize(cfg, results, wall):
                            "min": min(wins) if wins else None},
         "time_to_loss_s": mean(losses), "fight_s": mean([r["seconds"] for r in results]),
         "own_gun_s": mean([r["own_gun_s"] for r in results]), "adv_gun_s": mean([r["adv_gun_s"] for r in results]),
+        "mutual_gun_s": mean([r["mutual_gun_s"] for r in results]),
+        "head_on_passes": mean([r["head_on_passes"] for r in results]),
+        "timeouts_with_merges": sum(1 for r in results if r["outcome"] == "timeout" and r["head_on_passes"]),
         "offensive": mean([r["offensive"] for r in results]), "defensive": mean([r["defensive"] for r in results]),
         "energy_ratio": mean([r["energy_ratio"] for r in results]),
         "min_range_m": mean([r["min_range_m"] for r in results]),
@@ -348,7 +382,8 @@ def summarize(cfg, results, wall):
 
 def write_outputs(cfg, results, s):
     out = cfg["out_dir"]
-    cols = ["n", "seed", "outcome", "seconds", "min_range_m", "final_range_m", "own_gun_s", "adv_gun_s",
+    cols = ["n", "seed", "start_range_m", "start_aa_deg", "start_ata_deg", "outcome", "seconds", "min_range_m", "final_range_m", "own_gun_s", "adv_gun_s",
+            "mutual_gun_s", "head_on_passes",
             "offensive", "defensive", "energy_ratio", "own_min_alt_m", "adv_min_alt_m", "files"]
     with open(os.path.join(out, "summary.csv"), "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=cols, extrasaction="ignore")
@@ -372,10 +407,21 @@ def _plot_summary(results, s, path):
         ax.text(x, s["outcomes"][k], f"{s['outcomes'][k] / s['iterations']:.0%}", ha="center", va="bottom", fontsize=9)
     ax.set_title(f"Outcomes for {s['own_label']} (n = {s['iterations']})", loc="left", fontsize=10)
     ax = axs[0, 1]
-    ax.bar([r["n"] for r in results], [r["seconds"] for r in results],
-           color=[OUTCOME_COLORS.get(r["outcome"], "k") for r in results])
-    ax.set_xlabel("iteration"); ax.set_ylabel("fight length (s)")
-    ax.set_title("Fight length per iteration (colour = outcome)", loc="left", fontsize=10)
+    if s.get("random_start"):
+        # where in Table 1 the fights were won or lost; the sign of AA/ATA is only left vs right
+        ax.scatter([abs(r["start_ata_deg"]) for r in results], [abs(r["start_aa_deg"]) for r in results],
+                   s=[15 + r["start_range_m"] / 50 for r in results], alpha=0.85, edgecolors="none",
+                   color=[OUTCOME_COLORS.get(r["outcome"], "k") for r in results])
+        for x, y, text in ((5, 5, "offensive"), (5, 170, "head-on"), (175, 170, "defensive"), (175, 5, "back to back")):
+            ax.text(x, y, text, fontsize=8, alpha=0.5, ha="left" if x < 90 else "right", va="center")
+        ax.set_xlim(0, 180); ax.set_ylim(0, 180)
+        ax.set_xlabel("|ATA| at start (°)"); ax.set_ylabel("|AA| at start (°)")
+        ax.set_title("Outcome by start (colour = outcome, size = range)", loc="left", fontsize=10)
+    else:
+        ax.bar([r["n"] for r in results], [r["seconds"] for r in results],
+               color=[OUTCOME_COLORS.get(r["outcome"], "k") for r in results])
+        ax.set_xlabel("iteration"); ax.set_ylabel("fight length (s)")
+        ax.set_title("Fight length per iteration (colour = outcome)", loc="left", fontsize=10)
     ax = axs[1, 0]
     for r in results:
         ax.plot(np.arange(len(r["range_series"])) * 0.5, r["range_series"], color=OUTCOME_COLORS.get(r["outcome"], "k"),
@@ -391,13 +437,12 @@ def _plot_summary(results, s, path):
     ax.bar(nn, dfn, bottom=1 - dfn, color="#eb6834", label="defensive (it is on ours)")
     ax.set_ylim(0, 1); ax.set_xlabel("iteration"); ax.legend(fontsize=8, loc="lower right")
     ax.set_title(f"Share of each fight spent offensive / neutral / defensive ({s['own_label']})", loc="left", fontsize=10)
-    fig.suptitle(f"{s['own_label']} vs {s['adv_label']} from R={s['start']['range_m']:.0f} m, "
-                 f"AA={s['start']['aa_deg']:.0f}, ATA={s['start']['ata_deg']:.0f}", x=0.01, ha="left")
+    fig.suptitle(f"{s['own_label']} vs {s['adv_label']} from {start_text(s)}", x=0.01, ha="left")
     fig.tight_layout(); fig.savefig(path, dpi=100); plt.close(fig)
 
 
 def _variation(s):
-    parts = []
+    parts = ["a random start (drawn from the iteration's seed)"] if s.get("random_start") else []
     if s["stochastic"] and not {s["own"], s["adversary"]} <= {"bfm", "lag"}:
         parts.append("stochastic actions (each trained policy samples from its learned distribution)")
     if "bfm" in (s["own"], s["adversary"]):
@@ -407,24 +452,26 @@ def _variation(s):
 
 def _write_report(cfg, results, s, path):
     pct = lambda x: f"{100 * x:.0f}%"
+    rnd = s.get("random_start")
     o = s["outcomes"]
     ttk = s["time_to_kill_s"]
     lines = [
         f"# {s['own_label']} vs {s['adv_label']}", "",
-        f"{s['iterations']} engagements from the same start, {time.strftime('%Y-%m-%d %H:%M')}. "
-        f"Run folder `{s['run_name']}`.", "",
+        f"{s['iterations']} engagements from {'random starts' if rnd else 'the same start'}, "
+        f"{time.strftime('%Y-%m-%d %H:%M')}. Run folder `{s['run_name']}`.", "",
         "## Setup", "",
         "| | |", "|---|---|",
         f"| Own aircraft (blue) | {s['own_label']} |",
         f"| Adversary (red) | {s['adv_label']} |",
-        f"| Start | Range {s['start']['range_m']:.0f} m, AA {s['start']['aa_deg']:.0f}°, ATA {s['start']['ata_deg']:.0f}°; "
-        f"both at {START_ALT_M:.0f} m and {START_SPEED_MPS:.0f} m/s, wings level |",
+        f"| Start | {start_text(s)}; both at {START_ALT_M:.0f} m and "
+        f"{START_SPEED_MPS:.0f} m/s, wings level |",
         f"| Variation between iterations | {_variation(s)} |",
         f"| Weights | best checkpoints (`policy_best.pt`; MEOL: `options_best.pt` over the tactics it was trained with)"
         + ("; LAG pursuit: HHMARL's frozen `baseline_actor.pt`, deterministic" if "lag" in (s["own"], s["adversary"]) else "")
         + " |",
         f"| Fight limit | {cfg['max_steps'] / 50:.0f} s; a kill is a 0.5 s hold inside the gun cone (150–1000 m, ±15°) |",
-        f"| Seeds | {s['seed']} … {s['seed'] + s['iterations'] - 1} |", "",
+        f"| Seeds | {s['seed']} … {s['seed'] + s['iterations'] - 1}: iteration i uses seed {s['seed']} + i − 1"
+        + ("; the same seed gives the same starts for any pilots" if rnd else "") + " |", "",
         "## Result", "",
         f"**{s['own_label']} won {o.get('win', 0)} of {s['iterations']} ({pct(s['win_rate'])}, 95% CI "
         f"{pct(s['win_ci95'][0])}–{pct(s['win_ci95'][1])}).**", "",
@@ -441,6 +488,8 @@ def _write_report(cfg, results, s, path):
               f"| Time to be shot down (losses) | mean {s['time_to_loss_s']} s |" if s["time_to_loss_s"] else "| Time to be shot down | no losses |",
               f"| Mean fight length | {s['fight_s']} s |",
               f"| Gun solution held per fight (own / adversary) | {s['own_gun_s']} s / {s['adv_gun_s']} s |",
+              f"| Head-on passes: both in each other's cone at once (never scores) | {s['mutual_gun_s']} s per fight, "
+              f"{s['head_on_passes']} passes per fight; {s['timeouts_with_merges']} of the timeouts had at least one |",
               f"| Time offensive (on its six: AA ≤ 60°, ATA ≤ 60°) | {pct(s['offensive'])} |",
               f"| Time defensive (it is on ours: AA ≥ 120°, ATA ≥ 120°) | {pct(s['defensive'])} |",
               f"| Mean energy ratio (own / adversary, Eq. 31) | {s['energy_ratio']} |",
@@ -454,20 +503,28 @@ def _write_report(cfg, results, s, path):
                          f"{m['switches']} |")
     lines += ["", "![summary](summary.png)", "", "![every fight](overview_3d.png)", "",
               "## Every iteration", "",
-              "| # | Outcome | Time (s) | Closest (m) | Gun time own / adv (s) | Offensive | Files |",
-              "|---|---|---|---|---|---|---|"]
+              "| # |" + (" Start R / AA / ATA |" if rnd else "") +
+              " Outcome | Time (s) | Closest (m) | Gun time own / adv (s) | Head-on (mutual) s | Offensive | Files |",
+              "|---|" + ("---|" if rnd else "") + "---|---|---|---|---|---|---|"]
     for r in results:
         extra = f", [tactics]({r['files']}_options.png)" if r["meol"] else ""
-        lines.append(f"| {r['n']} | {r['outcome']} | {r['seconds']} | {r['min_range_m']:.0f} | {r['own_gun_s']} / "
-                     f"{r['adv_gun_s']} | {pct(r['offensive'])} | [3D]({r['files']}_3d.png), "
-                     f"[panels]({r['files']}_panels.png), [Tacview]({r['files']}.acmi){extra} |")
+        start = f" {r['start_range_m']:.0f} m / {r['start_aa_deg']:.0f}° / {r['start_ata_deg']:.0f}° |" if rnd else ""
+        lines.append(f"| {r['n']} |{start} {r['outcome']} | {r['seconds']} | {r['min_range_m']:.0f} | {r['own_gun_s']} / "
+                     f"{r['adv_gun_s']} | {r['mutual_gun_s']} ({r['head_on_passes']}) | {pct(r['offensive'])} | "
+                     f"[3D]({r['files']}_3d.png), [panels]({r['files']}_panels.png), [Tacview]({r['files']}.acmi){extra} |")
     lines += ["", "## Notes", "",
               "- Each fight is from the own aircraft's side: *win* means the blue jet held a gun solution for 0.5 s first.",
+              "- **Only a one-sided solution scores.** When both jets sit in each other's cone in gun range at once "
+              "(a head-on pass), neither side's 0.5 s count builds: the kill rule treats it as a merge, not a "
+              "decision, and every policy was trained under that rule. Such passes are counted under *Head-on "
+              "(mutual)* and bookmarked as MERGE in the Tacview files; they explain timeouts in which both jets "
+              "were nose-on in range.",
               "- The policies were trained against the rule-based expert only; policy-vs-policy fights are outside their "
               "training (the paper's confrontation experiment).",
               "- The simulator has no collision model: the jets can pass within metres of each other (see 'Closest').",
               "- The snapshot tactic exploits the expert's ground-avoidance rule in about a third of its wins against it "
               "(see `models/angle_tactic_S/README.md`); watch the lowest-altitude row.",
               "- Tacview files carry the gun cones (install once: `python export.py --install-mesh`), lock lines and an "
-              "outcome bookmark."]
+              "outcome bookmark. A MEOL jet's label shows the tactic flying it (\"MEOL energy\"), and every switch "
+              "is a message in Tacview's event log."]
     open(path, "w", encoding="utf-8").write("\n".join(lines) + "\n")

@@ -4,7 +4,8 @@ MEOL demo: a local web page to fly any two of the five pilots against each other
   python demo/app.py            -> opens http://127.0.0.1:5000
 
 Pick the own aircraft and the adversary (angle, snapshot, energy, MEOL option layer, rule-based
-expert), the start (Range, AA, ATA) and the number of iterations. Each run writes a folder under
+expert), the start (Range, AA, ATA, or random per iteration), the seed and the number of
+iterations. The seed fixes everything, so "Run again" repeats a run exactly. Each run writes a folder under
 demo_runs/ with every fight's 3D plot, flight-log panels and Tacview file plus report.md, and the
 page shows the results. Runs queue up and execute one at a time; fights within a run go in parallel.
 """
@@ -12,6 +13,7 @@ page shows the results. Runs queue up and execute one at a time; fights within a
 import json
 import os
 import queue
+import random
 import sys
 import threading
 import traceback
@@ -87,7 +89,9 @@ def _recent(limit=15):
 def index():
     q = request.args
     form = {"own": q.get("own", "meol"), "adversary": q.get("adversary", "bfm"), "range_m": q.get("range_m", 3000),
-            "aa_deg": q.get("aa_deg", 0), "ata_deg": q.get("ata_deg", 0), "iterations": q.get("iterations", 10)}
+            "aa_deg": q.get("aa_deg", 0), "ata_deg": q.get("ata_deg", 0), "iterations": q.get("iterations", 10),
+            "start_mode": "random" if q.get("start_mode") == "random" else "fixed",
+            "seed": q.get("seed") or random.randrange(100_000)}     # shown, so it can be reused
     return render_template("index.html", pilots=engine.PILOTS, info=PILOT_INFO, presets=PRESETS, form=form,
                            recent=_recent(), queued=sum(j["status"] in ("queued", "running") for j in JOBS.values()),
                            unavailable=_unavailable())
@@ -99,24 +103,37 @@ def run():
     try:
         cfg = {"own": f["own"], "adversary": f["adversary"],
                "range_m": float(f["range_m"]), "aa_deg": float(f["aa_deg"]), "ata_deg": float(f["ata_deg"]),
+               "random_start": f.get("start_mode") == "random",
                "iterations": int(f["iterations"]), "stochastic": "stochastic" in f, "weapons": "weapons" in f,
+               "seed": int(f["seed"]) if f.get("seed", "").strip() else random.randrange(100_000),
                "out_root": RUNS}
-        if f.get("seed", "").strip():
-            cfg["seed"] = int(f["seed"])
     except (KeyError, ValueError):
         abort(400, "bad form values")
     if cfg["own"] not in engine.PILOTS or cfg["adversary"] not in engine.PILOTS:
         abort(400, "unknown pilot")
     if {cfg["own"], cfg["adversary"]} & _unavailable():
         abort(400, "that pilot's weights are missing (LAG: python demo/lag_baseline.py --fetch)")
-    if not (500 <= cfg["range_m"] <= 10000 and -180 <= cfg["aa_deg"] <= 180 and -180 <= cfg["ata_deg"] <= 180
-            and 1 <= cfg["iterations"] <= 500):
+    geometry_ok = cfg["random_start"] or (500 <= cfg["range_m"] <= 10000 and -180 <= cfg["aa_deg"] <= 180
+                                          and -180 <= cfg["ata_deg"] <= 180)
+    if not (geometry_ok and 1 <= cfg["iterations"] <= 500 and 0 <= cfg["seed"] < 2 ** 31):
         abort(400, "values out of range")
     job_id = uuid.uuid4().hex[:8]
     JOBS[job_id] = {"cfg": cfg, "status": "queued", "done": 0, "total": cfg["iterations"], "outcomes": {},
                     "last": "", "run": None, "error": None}
     QUEUE.put(job_id)
     return redirect(url_for("job", job_id=job_id))
+
+
+@app.get("/api/starts")
+def starts():
+    """The random starts a run with this seed would fly (iteration i: seed + i), for the preview."""
+    try:
+        seed, n = int(request.args["seed"]), min(int(request.args.get("n", 10)), 500)
+    except (KeyError, ValueError):
+        abort(400, "seed and n must be integers")
+    if not (0 <= seed < 2 ** 31 and n >= 1):
+        abort(400, "values out of range")
+    return jsonify([engine.random_start(seed + i) for i in range(n)])
 
 
 @app.get("/job/<job_id>")
