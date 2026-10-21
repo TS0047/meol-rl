@@ -15,6 +15,19 @@ def body_x_enu(psi_rad, theta_rad):
     return np.array([ct * np.sin(psi_rad), ct * np.cos(psi_rad), np.sin(theta_rad)])
 
 
+def body_axes_enu(phi_rad, theta_rad, psi_rad):
+    """Body X (nose), Y (right wing) and Z (floor, body-down) unit vectors in
+    (east, north, up). Same DCM as f16_bfm_agent.AcState, re-expressed from NED to
+    ENU. Projecting a world vector onto these gives it in the aircraft's own frame."""
+    cp, sp = np.cos(phi_rad), np.sin(phi_rad)
+    ct, st = np.cos(theta_rad), np.sin(theta_rad)
+    cy, sy = np.cos(psi_rad), np.sin(psi_rad)
+    xb = np.array([ct * sy, ct * cy, st])
+    yb = np.array([sp * st * sy + cp * cy, sp * st * cy - cp * sy, -sp * ct])
+    zb = np.array([cp * st * sy - sp * cy, cp * st * cy + sp * sy, -cp * ct])
+    return xb, yb, zb
+
+
 def heading_vector_enu(psi_rad):
     """Horizontal heading (pitch = 0), (east, north, up). Only for initialisation,
     where both aircraft start level."""

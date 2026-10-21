@@ -10,8 +10,14 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.distributions import Normal
 
-DEVICE = torch.device("cpu")
 LOG_STD_MIN, LOG_STD_MAX = -20.0, 2.0
+
+
+def resolve_device(device="auto"):
+    """'auto' -> CUDA when available, else CPU. Anything else is passed to torch.device."""
+    if device == "auto":
+        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    return torch.device(device)
 
 
 def mlp(sizes, act=nn.ReLU, out_act=nn.Identity):
@@ -79,12 +85,27 @@ class ReplayBuffer:
                 torch.as_tensor(self.rew[idx]), torch.as_tensor(self.next_obs[idx]),
                 torch.as_tensor(self.done[idx]))
 
+    def state_dict(self):
+        n = self.size
+        return {"obs": self.obs[:n].copy(), "next_obs": self.next_obs[:n].copy(), "act": self.act[:n].copy(),
+                "rew": self.rew[:n].copy(), "done": self.done[:n].copy(), "ptr": self.ptr, "size": n}
+
+    def load_state_dict(self, sd):
+        n = sd["size"]
+        if n > self.max_size:
+            raise ValueError(f"checkpoint holds {n} transitions, buffer capacity is {self.max_size}")
+        for k in ("obs", "next_obs", "act", "rew", "done"):
+            getattr(self, k)[:n] = sd[k]
+        self.ptr, self.size = sd["ptr"] % self.max_size, n
+
 
 class SACAgent:
     """Implements Algorithm 1's soft option-action-value + intra-option policy updates.
-    Eq.(14)-(16): a SINGLE soft Q-network Q_phi and a single target Q_phi-bar --
-    no twin-Q / min-clipping (that modern-SAC trick is not in the paper's equations,
-    despite Fig.3 labelling the box "Double Q"; we reproduce Eq.(14)-(16) literally).
+    Eq.(14)-(16) with TWIN soft Q-networks (Q_phi1, Q_phi2) and their targets: the
+    bootstrap and the policy objective use min(Q1, Q2). Fig.3 labels both critic
+    boxes "Double Q", and Garage's SAC -- the library the paper trained with
+    (Sec 5.1) -- is twin-Q, so this matches what was actually run. A single Q
+    overestimates under the max-entropy backup and destabilised training here.
     The Q-loss is minimized via standard MSE + autograd + Adam, which implements
     the paper's own stated objective ("minimizing the squared residual error",
     Sec 2.2/4.2) with the mathematically-correct gradient-descent sign -- see
@@ -96,20 +117,28 @@ class SACAgent:
 
     def __init__(self, obs_dim, act_dim, hidden=256, gamma=0.99, tau=5e-3,
                  lr_q=3e-4, lr_pi=3e-4, lr_alpha=3e-4, target_entropy=-4.0,
-                 init_alpha=0.1):
+                 init_alpha=0.1, device="cpu", reward_scale=1.0):
+        """reward_scale multiplies every reward in the Bellman backup (Table 2 lists
+        "Reward scale"). It leaves the optimal policy unchanged but sets the scale of
+        Q, and so the alpha that balances entropy against it."""
         self.gamma, self.tau = gamma, tau
-        self.q = QNet(obs_dim, act_dim, hidden)
-        self.q_targ = QNet(obs_dim, act_dim, hidden)
-        self.q_targ.load_state_dict(self.q.state_dict())
-        for p in self.q_targ.parameters():
-            p.requires_grad = False
-        self.pi = GaussianPolicy(obs_dim, act_dim, hidden)
+        self.reward_scale = reward_scale
+        self.device = resolve_device(device)
+        dev = self.device
+        self.q1, self.q2 = QNet(obs_dim, act_dim, hidden).to(dev), QNet(obs_dim, act_dim, hidden).to(dev)
+        self.q1_targ = QNet(obs_dim, act_dim, hidden).to(dev)
+        self.q2_targ = QNet(obs_dim, act_dim, hidden).to(dev)
+        for q, q_targ in ((self.q1, self.q1_targ), (self.q2, self.q2_targ)):
+            q_targ.load_state_dict(q.state_dict())
+            for p in q_targ.parameters():
+                p.requires_grad = False
+        self.pi = GaussianPolicy(obs_dim, act_dim, hidden).to(dev)
 
-        self.q_opt = torch.optim.Adam(self.q.parameters(), lr=lr_q)
+        self.q_opt = torch.optim.Adam(list(self.q1.parameters()) + list(self.q2.parameters()), lr=lr_q)
         self.pi_opt = torch.optim.Adam(self.pi.parameters(), lr=lr_pi)
 
         self.target_entropy = target_entropy
-        self.log_alpha = torch.tensor(np.log(init_alpha), requires_grad=True)
+        self.log_alpha = torch.tensor(np.log(init_alpha), dtype=torch.float32, device=dev, requires_grad=True)
         self.alpha_opt = torch.optim.Adam([self.log_alpha], lr=lr_alpha)
 
     @property
@@ -117,36 +146,44 @@ class SACAgent:
         return self.log_alpha.exp()
 
     def act(self, obs, deterministic=False):
-        obs_t = torch.as_tensor(obs, dtype=torch.float32).unsqueeze(0)
+        obs_t = torch.as_tensor(obs, dtype=torch.float32, device=self.device).unsqueeze(0)
         with torch.no_grad():
             a, _, a_det = self.pi.sample(obs_t)
-        return (a_det if deterministic else a).squeeze(0).numpy()
+        return (a_det if deterministic else a).squeeze(0).cpu().numpy()
 
     def _soft_update(self):
         # Algorithm 1, line 12: phi_bar <- sigma*phi + (1-sigma)*phi_bar, sigma=tau (Table 2)
         with torch.no_grad():
-            for p, pt in zip(self.q.parameters(), self.q_targ.parameters()):
-                pt.data.mul_(1 - self.tau).add_(self.tau * p.data)
+            for q, q_targ in ((self.q1, self.q1_targ), (self.q2, self.q2_targ)):
+                for p, pt in zip(q.parameters(), q_targ.parameters()):
+                    pt.data.mul_(1 - self.tau).add_(self.tau * p.data)
 
-    def update(self, batch):
-        obs, act, rew, next_obs, done = batch
+    def update(self, batch, update_actor=True):
+        """update_actor=False trains only the critics (alpha frozen): used to fit fresh
+        Q-networks to a warm-started actor before the actor follows their gradients."""
+        obs, act, rew, next_obs, done = (t.to(self.device, non_blocking=True) for t in batch)
 
-        # ---- Eq.(15)-(16): single-network bootstrapped target ----
+        # ---- Eq.(15)-(16): bootstrapped target from the smaller of the two target Qs ----
         with torch.no_grad():
             next_a, next_logp, _ = self.pi.sample(next_obs)
-            u_targ = self.q_targ(next_obs, next_a) - self.alpha * next_logp  # Eq.(16)
-            backup = rew + self.gamma * (1 - done) * u_targ                  # Eq.(15)
+            q_next = torch.min(self.q1_targ(next_obs, next_a), self.q2_targ(next_obs, next_a))
+            u_targ = q_next - self.alpha * next_logp                        # Eq.(16)
+            backup = self.reward_scale * rew + self.gamma * (1 - done) * u_targ   # Eq.(15)
 
         # ---- Eq.(14): minimize squared residual (correct-sign gradient descent) ----
-        q_pred = self.q(obs, act)
-        q_loss = F.mse_loss(q_pred, backup)
+        q_loss = F.mse_loss(self.q1(obs, act), backup) + F.mse_loss(self.q2(obs, act), backup)
         self.q_opt.zero_grad()
         q_loss.backward()
         self.q_opt.step()
 
+        if not update_actor:
+            self._soft_update()
+            return {"q_loss": q_loss.item(), "pi_loss": float("nan"),
+                    "alpha": self.alpha.item(), "alpha_loss": float("nan"), "entropy": float("nan")}
+
         # ---- Eq.(17)-(18): reparameterized policy gradient (autograd = chain rule) ----
         a, logp, _ = self.pi.sample(obs)
-        q_pi = self.q(obs, a)
+        q_pi = torch.min(self.q1(obs, a), self.q2(obs, a))
         pi_loss = (self.alpha.detach() * logp - q_pi).mean()
         self.pi_opt.zero_grad()
         pi_loss.backward()
@@ -161,8 +198,26 @@ class SACAgent:
         self._soft_update()
 
         return {"q_loss": q_loss.item(), "pi_loss": pi_loss.item(),
-                "alpha": self.alpha.item(), "alpha_loss": alpha_loss.item()}
+                "alpha": self.alpha.item(), "alpha_loss": alpha_loss.item(),
+                "entropy": -logp.mean().item()}
 
     def save(self, path):
-        torch.save({"pi": self.pi.state_dict(), "q": self.q.state_dict(),
-                    "log_alpha": self.log_alpha}, path)
+        torch.save({"pi": self.pi.state_dict(), "q1": self.q1.state_dict(),
+                    "q2": self.q2.state_dict(), "log_alpha": self.log_alpha}, path)
+
+    def state_dict(self):
+        """Everything needed to resume training exactly (networks, targets, optimizers, alpha)."""
+        mods = ("pi", "q1", "q2", "q1_targ", "q2_targ", "q_opt", "pi_opt", "alpha_opt")
+        sd = {m: getattr(self, m).state_dict() for m in mods}
+        sd["log_alpha"] = self.log_alpha.detach().cpu()
+        return sd
+
+    def load_state_dict(self, sd):
+        for m in ("pi", "q1", "q2", "q1_targ", "q2_targ", "q_opt", "pi_opt", "alpha_opt"):
+            getattr(self, m).load_state_dict(sd[m])
+        with torch.no_grad():
+            self.log_alpha.copy_(sd["log_alpha"].to(self.device))
+
+    def set_alpha(self, alpha):
+        with torch.no_grad():
+            self.log_alpha.fill_(float(np.log(alpha)))

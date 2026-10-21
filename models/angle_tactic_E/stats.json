@@ -1,0 +1,25 @@
+{
+  "first_top_epoch": 73,
+  "last_epoch": 418,
+  "env_steps": 15000003,
+  "top_rung": {
+    "win": 5806,
+    "loss": 398,
+    "timeout": 684,
+    "crash": 20,
+    "fights": 6908
+  },
+  "last20": {
+    "win": 346,
+    "loss": 5,
+    "timeout": 37,
+    "crash": 0,
+    "fights": 388
+  },
+  "best": {
+    "epoch": 276,
+    "env_steps": 11548351,
+    "win_rate_100": 0.98,
+    "opponent": "bfm_angles"
+  }
+}

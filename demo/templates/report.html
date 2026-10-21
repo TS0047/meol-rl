@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block title %}report.md · MEOL demo{% endblock %}
+{% block head %}
+<base href="{{ url_for('files', run=run, name='') }}">
+<style>
+  .md img { max-width: 100%; border-radius: 8px; border: 1px solid var(--line); background: #fff; }
+  .md table { margin: 8px 0 16px; } .md h1 { font-size: 22px; } .md h2 { font-size: 17px; margin-top: 26px; }
+</style>
+{% endblock %}
+{% block body %}
+<p><a href="{{ url_for('result', run=run) }}">← back to the results</a> · <a href="report.md">raw report.md</a></p>
+<div class="panel md">{{ body|safe }}</div>
+{% endblock %}

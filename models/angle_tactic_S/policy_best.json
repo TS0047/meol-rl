@@ -1,0 +1,6 @@
+{
+  "epoch": 176,
+  "env_steps": 10844878,
+  "win_rate_100": 0.97,
+  "opponent": "bfm_angles"
+}

@@ -1,0 +1,2 @@
+# Tacview files are written with LF endings (ACMI spec); keep them byte-exact on every checkout
+*.acmi -text

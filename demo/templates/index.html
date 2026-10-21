@@ -1,0 +1,184 @@
+{% extends "base.html" %}
+{% block body %}
+<form method="post" action="{{ url_for('run') }}" id="f">
+<div class="grid2">
+  <div class="panel own">
+    <div class="side-title own">Own aircraft (blue)</div>
+    <div class="pilots">
+    {% for key, p in pilots.items() %}
+      <label class="pilot"><input type="radio" name="own" value="{{ key }}" {{ 'checked' if form.own == key }} {{ 'disabled' if key in unavailable }}>
+        <span><b>{{ p.label }}</b><small>{{ info[key][0] }}</small>
+        {% if key != 'bfm' %}<span class="rec"> · vs the expert, 38 fixed starts: {{ info[key][1] }}</span>{% endif %}
+        {% if key in unavailable %}<span class="rec" style="color:var(--red)"> · weights missing: <code>python demo/lag_baseline.py --fetch</code></span>{% endif %}</span></label>
+    {% endfor %}
+    </div>
+  </div>
+  <div class="panel adv">
+    <div class="side-title adv">Adversary (red)</div>
+    <div class="pilots">
+    {% for key, p in pilots.items() %}
+      <label class="pilot"><input type="radio" name="adversary" value="{{ key }}" {{ 'checked' if form.adversary == key }} {{ 'disabled' if key in unavailable }}>
+        <span><b>{{ p.label }}</b><small>{{ info[key][0] }}</small></span></label>
+    {% endfor %}
+    </div>
+  </div>
+</div>
+
+<div class="grid2">
+  <div class="panel">
+    <h2>Start geometry</h2>
+    <div class="seg">
+      <label><input type="radio" name="start_mode" value="fixed" {{ 'checked' if form.start_mode != 'random' }}> Fixed start</label>
+      <label><input type="radio" name="start_mode" value="random" {{ 'checked' if form.start_mode == 'random' }}> Random start per iteration</label>
+    </div>
+    <p class="hint" id="random-note">Each iteration draws its own Range (1900–5100 m), AA and ATA (−180…180°) from the paper's
+      Table 1, the domain every policy trained on. Iteration <i>i</i> draws with seed + <i>i</i> and nothing else, so the
+      <b>same seed gives the same starts</b> whichever pilots fly: fights can be compared start by start across matchups.</p>
+    <div id="fixed-fields">
+    <label class="field">Preset
+      <select id="preset"><option value="">custom</option>
+      {% for name, r, aa, ata in presets %}<option value="{{ r }},{{ aa }},{{ ata }}">{{ name }} (R {{ r }}, AA {{ aa }}, ATA {{ ata }})</option>{% endfor %}
+      </select></label>
+    <label class="field">Range (m) <span class="hint">· trained on 1900–5100</span>
+      <span class="row"><input type="range" min="500" max="10000" step="50" data-for="range_m"><input type="number" name="range_m" id="range_m" min="500" max="10000" step="1" value="{{ form.range_m }}"></span></label>
+    <label class="field">AA, aspect angle (°) <span class="hint">· 0 = we are on its six, 180 = it points at us</span>
+      <span class="row"><input type="range" min="-180" max="180" step="1" data-for="aa_deg"><input type="number" name="aa_deg" id="aa_deg" min="-180" max="180" step="1" value="{{ form.aa_deg }}"></span></label>
+    <label class="field">ATA, antenna train angle (°) <span class="hint">· 0 = our nose on it, 180 = it is behind us</span>
+      <span class="row"><input type="range" min="-180" max="180" step="1" data-for="ata_deg"><input type="number" name="ata_deg" id="ata_deg" min="-180" max="180" step="1" value="{{ form.ata_deg }}"></span></label>
+    </div>
+    <p class="hint">Both jets start at 4500 m and 200 m/s, wings level. AA and ATA are measured from the own aircraft's side.</p>
+  </div>
+  <div class="panel">
+    <h2>Start preview <span class="hint">(top view, north up, cones = gun range 150–1000 m ±15°)</span></h2>
+    <svg id="preview" viewBox="-1 -1 2 2" style="width:100%;height:330px;background:var(--bg);border-radius:8px"></svg>
+    <div id="starts" class="starts" aria-label="random starts for this seed"></div>
+  </div>
+</div>
+
+<div class="panel">
+  <h2>Run</h2>
+  <div style="display:flex;gap:28px;flex-wrap:wrap;align-items:flex-end">
+    <label class="field">Iterations<span class="row"><input type="number" name="iterations" id="iterations" min="1" max="500" value="{{ form.iterations }}"></span></label>
+    <label class="field">Seed <span class="hint">(same seed + same settings = the same fights)</span><span class="row">
+      <input type="text" name="seed" id="seed" inputmode="numeric" value="{{ form.seed }}">
+      <button type="button" class="btn ghost" id="reroll" style="padding:6px 12px">New</button></span></label>
+    <div class="checks">
+      <label><input type="checkbox" name="stochastic" checked> Stochastic actions <span class="hint">(iterations differ; off = every fight identical unless the expert flies)</span></label>
+      <label><input type="checkbox" name="weapons" checked> Tacview WEZ layer <span class="hint">(gun cones, lock lines, outcome bookmark)</span></label>
+    </div>
+    <div style="margin-left:auto;text-align:right">
+      <div class="hint" id="eta"></div>
+      <button type="submit">Run demo ▶</button>
+      {% if queued %}<div class="hint">{{ queued }} run(s) already queued</div>{% endif %}
+    </div>
+  </div>
+</div>
+</form>
+
+<div class="panel">
+  <h2>Recent runs</h2>
+  {% if recent %}
+  <div class="scroll"><table>
+    <tr><th>Run</th><th>Own vs adversary</th><th>Start (R / AA / ATA)</th><th>n</th><th>Win rate</th><th>Outcomes</th></tr>
+    {% for s in recent %}
+    <tr><td><a href="{{ url_for('result', run=s.run_name) }}">{{ s.run_name[:15] }}</a></td>
+      <td><span style="color:var(--blue)">{{ s.own_label }}</span> vs <span style="color:var(--red)">{{ s.adv_label }}</span></td>
+      <td>{% if s.random_start %}random · seed {{ s.seed }}{% else %}{{ s.start.range_m|round|int }} / {{ s.start.aa_deg|round|int }} / {{ s.start.ata_deg|round|int }}{% endif %}</td>
+      <td>{{ s.iterations }}</td><td><b>{{ (100 * s.win_rate)|round|int }}%</b></td>
+      <td>{% for k, v in s.outcomes.items() %}<span class="pill o-{{ k }}">{{ k }} {{ v }}</span> {% endfor %}</td></tr>
+    {% endfor %}
+  </table></div>
+  {% else %}<p class="hint">No runs yet. Results are written to <code>demo_runs/</code>.</p>{% endif %}
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+for (const s of document.querySelectorAll('input[type=range]')) {
+  const num = $(s.dataset.for);
+  s.value = num.value;
+  s.addEventListener('input', () => { num.value = s.value; $('preset').value = ''; drawFixed(); });
+  num.addEventListener('input', () => { s.value = num.value; $('preset').value = ''; drawFixed(); });
+}
+$('preset').addEventListener('change', e => {
+  if (!e.target.value) return;
+  const [r, aa, ata] = e.target.value.split(',');
+  for (const [id, v] of [['range_m', r], ['aa_deg', aa], ['ata_deg', ata]]) {
+    $(id).value = v; document.querySelector(`[data-for=${id}]`).value = v;
+  }
+  drawFixed();
+});
+$('iterations').addEventListener('input', () => { eta(); loadStarts(); });
+
+// Random mode: the server draws the same starts the run will fly (engine.random_start(seed + i))
+const random = () => document.querySelector('input[name=start_mode]:checked').value === 'random';
+let starts = [], pick = 0, pending;
+function setMode() {
+  $('fixed-fields').classList.toggle('dim', random());
+  $('random-note').style.display = $('starts').style.display = random() ? '' : 'none';
+  random() ? loadStarts() : drawFixed();
+}
+for (const r of document.querySelectorAll('input[name=start_mode]')) r.addEventListener('change', setMode);
+$('seed').addEventListener('input', () => { pick = 0; loadStarts(); });
+$('reroll').addEventListener('click', () => { $('seed').value = Math.floor(Math.random() * 100000); pick = 0; loadStarts(); });
+
+function loadStarts() {
+  if (!random()) return;
+  clearTimeout(pending);
+  pending = setTimeout(async () => {            // debounce typing
+    const seed = $('seed').value.trim(), n = Math.min(Math.max(1, +$('iterations').value || 1), 500);
+    if (!/^\d+$/.test(seed)) { $('starts').innerHTML = '<span class="hint">Enter a whole-number seed to see its starts.</span>'; return; }
+    const res = await fetch(`{{ url_for('starts') }}?seed=${seed}&n=${n}`);
+    if (!res.ok) return;
+    starts = await res.json();
+    pick = Math.min(pick, starts.length - 1);
+    showStarts();
+  }, 150);
+}
+function showStarts() {
+  $('starts').innerHTML = starts.map(([r, aa, ata], i) =>
+    `<button type="button" data-i="${i}" class="${i === pick ? 'on' : ''}">#${i + 1} · ${r} m · AA ${Math.round(aa)}° · ATA ${Math.round(ata)}°</button>`).join('');
+  for (const b of $('starts').querySelectorAll('button'))
+    b.addEventListener('click', () => { pick = +b.dataset.i; showStarts(); });
+  const [r, aa, ata] = starts[pick];
+  draw(r, aa, ata, `#${pick + 1} of ${starts.length}: `);
+}
+
+function eta() {
+  const n = Math.max(1, +$('iterations').value || 1), w = Math.min(n, 6);
+  const s = Math.round(5 + n * 7 / w);
+  $('eta').textContent = `≈ ${s < 90 ? s + ' s' : Math.round(s / 60) + ' min'} for ${n} fight${n > 1 ? 's' : ''}`;
+}
+
+// mirrors geometry.reset_geometry: own jet at the origin heading north; LOS at ATA clockwise from
+// the own nose; the adversary R along the LOS, heading AA clockwise from the LOS
+function drawFixed() { draw(+$('range_m').value, +$('aa_deg').value, +$('ata_deg').value, ''); }
+function draw(R, aaDeg, ataDeg, label) {
+  const aa = aaDeg * Math.PI / 180, ata = ataDeg * Math.PI / 180;
+  const own = [0, 0], adv = [R * Math.sin(ata), R * Math.cos(ata)];
+  const hOwn = 0, hAdv = ata + aa;
+  const cx = adv[0] / 2, cy = adv[1] / 2, half = Math.max(R * 0.75, 1400);
+  const svg = $('preview');
+  svg.setAttribute('viewBox', `${cx - half} ${-cy - half} ${2 * half} ${2 * half}`);
+  const P = (x, y) => `${x},${-y}`;
+  function jet(p, h, col) {
+    const L = half * 0.07, W = half * 0.045, f = [Math.sin(h), Math.cos(h)], r = [Math.cos(h), -Math.sin(h)];
+    const nose = [p[0] + f[0] * L, p[1] + f[1] * L];
+    const l = [p[0] - f[0] * L * 0.6 - r[0] * W, p[1] - f[1] * L * 0.6 - r[1] * W];
+    const rr = [p[0] - f[0] * L * 0.6 + r[0] * W, p[1] - f[1] * L * 0.6 + r[1] * W];
+    const c = 15 * Math.PI / 180, cone = [];
+    for (const [a, d] of [[-c, 150], [-c, 1000], [c, 1000], [c, 150]])
+      cone.push(P(p[0] + Math.sin(h + a) * d, p[1] + Math.cos(h + a) * d));
+    return `<polygon points="${cone.join(' ')}" fill="${col}" fill-opacity=".14" stroke="${col}" stroke-opacity=".5" stroke-width="${half * .004}"/>` +
+           `<polygon points="${P(...nose)} ${P(...l)} ${P(...rr)}" fill="${col}"/>`;
+  }
+  const fs = half * 0.055;
+  svg.innerHTML =
+    `<line x1="${own[0]}" y1="${-own[1]}" x2="${adv[0]}" y2="${-adv[1]}" stroke="currentColor" stroke-opacity=".35" stroke-dasharray="${half * .02}" stroke-width="${half * .004}"/>` +
+    jet(own, hOwn, '#2a78d6') + jet(adv, hAdv, '#e0533a') +
+    `<text x="${cx}" y="${-cy - half * 0.04}" font-size="${fs}" fill="currentColor" fill-opacity=".7" text-anchor="middle">${label}${R.toFixed(0)} m</text>` +
+    `<text x="${cx - half * 0.95}" y="${-cy + half * 0.92}" font-size="${fs * .9}" fill="currentColor" fill-opacity=".55">N ↑ · 1 km = ${(1000 / (2 * half) * 100).toFixed(0)}% of width</text>`;
+  svg.style.color = getComputedStyle(document.body).color;
+}
+setMode(); eta();
+</script>
+{% endblock %}

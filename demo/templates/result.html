@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+{% block title %}{{ s.own_label }} vs {{ s.adv_label }} · MEOL demo{% endblock %}
+{% block body %}
+{% set f = url_for('files', run=run, name='') %}
+<div class="panel">
+  <div style="display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap;align-items:flex-start">
+    <div>
+      <h2 style="font-size:20px;margin-bottom:4px"><span style="color:var(--blue)">{{ s.own_label }}</span> vs <span style="color:var(--red)">{{ s.adv_label }}</span></h2>
+      <div class="hint">{% if s.random_start %}Random start per iteration (Table 1; the same seed gives the same starts for any pilots){% else %}Start R {{ s.start.range_m|round|int }} m, AA {{ s.start.aa_deg|round|int }}°, ATA {{ s.start.ata_deg|round|int }}°{% endif %} ·
+        {{ s.iterations }} iterations · seeds {{ s.seed }}–{{ s.seed + s.iterations - 1 }} ·
+        {{ 'stochastic actions' if s.stochastic else 'deterministic' }} · {{ s.wall_s }} s to run</div>
+      <div class="hint" style="margin-top:4px">Folder: <code>{{ folder }}</code></div>
+    </div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      <a class="btn ghost" href="{{ url_for('report', run=run) }}">report.md</a>
+      <form method="post" action="{{ url_for('open_folder', run=run) }}"><button class="btn ghost" type="submit">Open folder</button></form>
+      <a class="btn" title="Opens the form with this run's settings and seed: unchanged, it repeats the run exactly"
+         href="{{ url_for('index', own=s.own, adversary=s.adversary, range_m=s.start.range_m, aa_deg=s.start.aa_deg, ata_deg=s.start.ata_deg, iterations=s.iterations, seed=s.seed, start_mode='random' if s.random_start else 'fixed') }}">Run again / edit</a>
+    </div>
+  </div>
+</div>
+
+<div class="kpis" style="margin-bottom:20px">
+  <div class="kpi"><div class="v" style="color:var(--blue)">{{ (100 * s.win_rate)|round|int }}%</div>
+    <div class="l">Win rate (95% CI {{ (100 * s.win_ci95[0])|round|int }}–{{ (100 * s.win_ci95[1])|round|int }}%)</div></div>
+  <div class="kpi"><div class="v" style="color:var(--red)">{{ (100 * s.loss_rate)|round|int }}%</div><div class="l">Lost (shot down, crashed or disengaged)</div></div>
+  <div class="kpi"><div class="v">{{ (100 * s.draw_rate)|round|int }}%</div><div class="l">Draw (time out)</div></div>
+  <div class="kpi"><div class="v">{{ s.time_to_kill_s.median if s.time_to_kill_s.median is not none else '—' }}{{ ' s' if s.time_to_kill_s.median is not none }}</div><div class="l">Median time to kill</div></div>
+  <div class="kpi"><div class="v">{{ s.own_gun_s }} / {{ s.adv_gun_s }} s</div><div class="l">Gun solution per fight, own / adversary</div></div>
+  {% if s.mutual_gun_s is defined %}<div class="kpi" title="Both jets in each other's gun cone at once. The kill rule scores only one-sided holds, so a head-on pass is never a kill.">
+    <div class="v">{{ s.mutual_gun_s }} s</div><div class="l">Head-on (mutual) cone time per fight, which never scores · {{ s.head_on_passes }} passes</div></div>{% endif %}
+  <div class="kpi"><div class="v">{{ (100 * s.offensive)|round|int }}% / {{ (100 * s.defensive)|round|int }}%</div><div class="l">Time offensive / defensive</div></div>
+  <div class="kpi"><div class="v">{{ s.energy_ratio }}</div><div class="l">Mean energy ratio, own / adversary</div></div>
+  {% if s.meol_own %}<div class="kpi"><div class="v" style="font-size:17px">{{ (100 * s.meol_own.share.angle)|round|int }} / {{ (100 * s.meol_own.share.snapshot)|round|int }} / {{ (100 * s.meol_own.share.energy)|round|int }}%</div><div class="l">MEOL (own): angle / snapshot / energy · {{ s.meol_own.switches }} switches</div></div>{% endif %}
+  {% if s.meol_adversary %}<div class="kpi"><div class="v" style="font-size:17px">{{ (100 * s.meol_adversary.share.angle)|round|int }} / {{ (100 * s.meol_adversary.share.snapshot)|round|int }} / {{ (100 * s.meol_adversary.share.energy)|round|int }}%</div><div class="l">MEOL (adversary): angle / snapshot / energy · {{ s.meol_adversary.switches }} switches</div></div>{% endif %}
+</div>
+
+<div class="panel"><h2>Summary</h2><a href="{{ f }}summary.png"><img class="fig" src="{{ f }}summary.png" alt="summary charts"></a></div>
+<div class="panel"><h2>Every fight in 3D <span class="hint">(blue = own, red = adversary, squares = start)</span></h2>
+  <a href="{{ f }}overview_3d.png"><img class="fig" src="{{ f }}overview_3d.png" alt="all trajectories"></a></div>
+
+<div class="panel">
+  <h2>Iterations</h2>
+  <div class="scroll"><table>
+    <tr><th>#</th><th>3D</th>{% if s.random_start %}<th>Start R / AA / ATA</th>{% endif %}<th>Outcome</th><th>Time</th><th>Closest</th><th>Gun time own / adv</th><th title="both in each other's cone at once: never scores">Head-on (mutual)</th><th>Offensive</th><th>Lowest alt own / adv</th><th>Files</th></tr>
+    {% for r in its %}
+    <tr>
+      <td>{{ r.n }}</td>
+      <td><a href="{{ f }}{{ r.files }}_3d.png"><img class="thumb" loading="lazy" src="{{ f }}{{ r.files }}_3d.png" alt="3D"></a></td>
+      {% if s.random_start %}<td>{{ r.start_range_m|round|int }} m / {{ r.start_aa_deg|round|int }}° / {{ r.start_ata_deg|round|int }}°</td>{% endif %}
+      <td><span class="pill o-{{ r.outcome }}">{{ r.outcome }}</span></td>
+      <td>{{ r.seconds }} s</td><td>{{ r.min_range_m|round|int }} m</td>
+      <td>{{ r.own_gun_s }} / {{ r.adv_gun_s }} s</td>
+      <td>{% if r.mutual_gun_s is defined %}{{ r.mutual_gun_s }} s{% if r.head_on_passes %} · {{ r.head_on_passes }} pass{{ 'es' if r.head_on_passes > 1 }}{% endif %}{% else %}—{% endif %}</td>
+      <td>{{ (100 * r.offensive)|round|int }}%</td>
+      <td>{{ r.own_min_alt_m|int }} / {{ r.adv_min_alt_m|int }} m</td>
+      <td><a href="{{ f }}{{ r.files }}_panels.png">panels</a> ·
+          <a href="{{ f }}{{ r.files }}_3d.png">3D</a> ·
+          {% if r.has_options %}<a href="{{ f }}{{ r.files }}_options.png">tactics</a> · {% endif %}
+          <a href="{{ f }}{{ r.files }}.acmi">Tacview</a></td>
+    </tr>
+    {% endfor %}
+  </table></div>
+  <p class="hint">Only a <b>one-sided</b> gun solution scores. When both jets sit in each other's cone at once (a head-on pass), neither side's 0.5 s count builds; that time is the <i>Head-on (mutual)</i> column, and each pass is bookmarked <b>MERGE</b> in Tacview.</p>
+  <p class="hint">Tacview files carry gun cones, lock lines (one-sided solutions only), merge and outcome bookmarks. A MEOL jet's label names the tactic flying it, and every tactic switch is a message in Tacview's event log. Install the cone model once with <code>python export.py --install-mesh</code>.</p>
+</div>
+{% endblock %}

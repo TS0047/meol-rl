@@ -1,0 +1,41 @@
+{
+  "epochs": 386,
+  "env_steps": 15024814,
+  "all": {
+    "win": 5800,
+    "loss": 133,
+    "timeout": 1787,
+    "crash": 0,
+    "other": 0,
+    "fights": 7720
+  },
+  "first_quarter": {
+    "win": 1149,
+    "loss": 18,
+    "timeout": 753,
+    "crash": 0,
+    "other": 0,
+    "fights": 1920
+  },
+  "last20": {
+    "win": 324,
+    "loss": 11,
+    "timeout": 65,
+    "crash": 0,
+    "other": 0,
+    "fights": 400
+  },
+  "best": {
+    "epoch": 323,
+    "env_steps": 12989670,
+    "win_rate_100": 0.93
+  },
+  "final_rolling": 0.79,
+  "last20_share": [
+    0.29,
+    0.11,
+    0.61
+  ],
+  "last20_switches": 13.3,
+  "first20_switches": 33.1
+}
